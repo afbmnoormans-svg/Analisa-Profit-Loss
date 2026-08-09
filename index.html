@@ -511,7 +511,7 @@ function bindEditable(root){
   });
 }
 function resetNotes(){
-  if(!confirm('Kembalikan semua catatan ke teks awal? Catatan yang Anda tulis akan hilang.')) return;
+  if(!confirm('Kembalikan semua catatan ke teks awal? Catatan manual akan hilang.')) return;
   NOTES={}; saveNotes(); render();
 }
 
@@ -860,9 +860,9 @@ function tabFB(){
   const ms=closedMonths(y), tl=ms.map(x=>MSHORT[x-1]);
 
   let h='';
-  h+=`<div class="eyebrow">Tab 2 — Sheet 01.2 F&amp;B Dept &middot; area tanggung jawab Anda</div>
+  h+=`<div class="eyebrow">Tab 2 — Sheet 01.2 F&amp;B Dept</div>
       <h2 class="ph">Food &amp; Beverage Department</h2>
-      <p class="lead">Ini bagian inti aplikasi. Setiap baris di sheet <em>01.2 F&amp;B Dept</em> dibedah di sini: dari mana revenue datang, di mana biaya lari, dan berapa sisa yang masuk ke department profit.</p>`;
+      <p class="lead">Setiap baris di sheet <em>01.2 F&amp;B Dept</em> dibedah di sini: dari mana revenue datang, di mana biaya lari, dan berapa sisa yang masuk ke department profit.</p>`;
 
   if(!closed) h+=`<div class="banner mt"><strong>${MONTHS[m-1]} ${y} belum closing.</strong> Baris cost of sales, payroll, dan other expenses di file sumber masih bernilai nol, jadi seluruh rasio biaya dan margin di bawah tidak dapat dibaca. Yang tersedia hanya proyeksi revenue.</div>`;
 
@@ -1192,7 +1192,7 @@ function tabBiaya(){
 
   let h=`<div class="eyebrow">Tab 5 — Sheet 01.2 F&amp;B Dept</div>
     <h2 class="ph">Payroll &amp; other expenses</h2>
-    <p class="lead">Setelah cost of sales, dua blok inilah yang menentukan margin. Payroll relatif tetap; other expenses yang paling bisa Anda kendalikan minggu ke minggu.</p>`;
+    <p class="lead">Setelah cost of sales, dua blok inilah yang menentukan margin. Payroll relatif tetap; other expenses yang paling bisa dikendalikan minggu ke minggu.</p>`;
 
   if(!closed) h+=`<div class="banner mt"><strong>${MONTHS[m-1]} ${y} belum closing</strong> — payroll dan other expenses masih nol di file sumber.</div>`;
 
@@ -1917,7 +1917,7 @@ function tabTren(){
 
   let h=`<div class="eyebrow">Tab 7 — Perbandingan antar bulan</div>
     <h2 class="ph">Tren bulan ke bulan</h2>
-    <p class="lead">Pertanyaan yang dijawab tab ini: revenue naik berapa persen, dan biaya ikut naik berapa persen. Kalau biaya tumbuh lebih cepat dari revenue, margin pasti tergerus meski omzet terlihat bagus.</p>`;
+    <p class="lead">Fokus tab ini: revenue naik berapa persen, dan biaya ikut naik berapa persen. Kalau biaya tumbuh lebih cepat dari revenue, margin pasti tergerus meski omzet terlihat bagus.</p>`;
 
   if(openM.length) h+=`<div class="banner mt"><strong>${openM.map(x=>MONTHS[x-1]).join(' dan ')} ${y} belum closing</strong> dan tidak dimasukkan ke perhitungan tren, karena kolom biayanya masih nol di file sumber. Tren di bawah memakai ${MONTHS[ms[0]-1]}–${MONTHS[ms[ms.length-1]-1]}.</div>`;
 
@@ -2141,7 +2141,7 @@ function tabInsight(){
 
   let h=`<div class="eyebrow">Tab 9 — Kesimpulan</div>
     <h2 class="ph">Temuan &amp; rencana aksi</h2>
-    <p class="lead">Poin-poin di bawah dihitung otomatis dari data ${MONTHS[ms[0]-1]}–${MONTHS[ms[ms.length-1]-1]} ${y}. Semua teks bisa Anda ubah sebelum dipakai di rapat.</p>
+    <p class="lead">Poin-poin di bawah dihitung otomatis dari data ${MONTHS[ms[0]-1]}–${MONTHS[ms[ms.length-1]-1]} ${y}. Semua teks dapat disunting langsung sebelum dipakai di rapat.</p>
     <div style="margin-top:12px"><button class="btn" id="resetNotes">Kembalikan semua catatan ke teks awal</button></div>`;
 
   const findings=[
@@ -2232,7 +2232,7 @@ function tabData(){
         <li>Setiap bulan berisi dua objek, <code>pl</code> dan <code>fb</code>, dengan kunci berupa nomor baris di sheet asli dan nilai berupa larik enam angka: <code>[aktual, budget, tahun lalu, YTD aktual, YTD budget, bulan lalu]</code>.</li>
         <li>Tombol tahun di kanan atas akan muncul sendiri begitu blok tahun baru terbaca.</li>
       </ol>
-      <p style="margin:8px 0 0;font-size:13px">Cara paling praktis: kirimkan file P&amp;L tahun berikutnya, dan blok data itu bisa dibuatkan langsung dari file aslinya sehingga Anda tinggal menyalinnya ke sini.</p>
+      <p style="margin:8px 0 0;font-size:13px">Blok data tiap tahun disusun sekali dari file P&amp;L aslinya, lalu ditempelkan ke bagian <code>const DATA =</code> pada berkas ini.</p>
     </div>
   </div>`;
 
@@ -2257,7 +2257,7 @@ function tabData(){
       <table class="t"><tbody>
       <tr><td style="width:34%">Isi berkas</td><td style="text-align:left">Seluruh angka tersimpan apa adanya di dalam berkas HTML ini, tanpa kata sandi. Siapa pun yang memegang berkasnya bisa membaca semua isinya.</td></tr>
       <tr><td>Koneksi keluar</td><td style="text-align:left">Tidak ada. Berkas bekerja sepenuhnya luring; seluruh koneksi jaringan diblokir oleh Content-Security-Policy, termasuk unduhan huruf dari luar.</td></tr>
-      <tr><td>Catatan Anda</td><td style="text-align:left">Tersimpan di peramban komputer ini saja, tidak ikut terbawa bila berkasnya disalin ke tempat lain.</td></tr>
+      <tr><td>Catatan manual</td><td style="text-align:left">Tersimpan di peramban komputer ini saja, tidak ikut terbawa bila berkasnya disalin ke tempat lain.</td></tr>
       <tr><td>Hasil cetak</td><td style="text-align:left">Setiap halaman cetak diberi penanda &ldquo;Dokumen rahasia&rdquo; di bagian atas.</td></tr>
       </tbody></table>
       <div class="note-box clay" style="margin-top:14px">
@@ -2688,7 +2688,7 @@ function render(opt){
   const tab=TABS.find(t=>t.id===state.tab)||TABS[0];
   const c=document.getElementById('content');
   c.innerHTML = `<div class="panel on"><div class="print-conf">Dokumen rahasia — Hotel Noormans Semarang${VIEWER?' &middot; dibuka oleh '+esc(VIEWER):''}</div>${tab.fn()}
-    <footer class="foot">Sumber: file P&amp;L bulanan Hotel Noormans Semarang, sheet 01. Profit &amp; Lost OK dan 01.2 F&amp;B Dept. Seluruh nilai adalah angka net sesuai file asli. Catatan yang Anda ketik tersimpan di peramban ini saja.</footer></div>`;
+    <footer class="foot">Sumber: file P&amp;L bulanan Hotel Noormans Semarang, sheet 01. Profit &amp; Lost OK dan 01.2 F&amp;B Dept. Seluruh nilai adalah angka net sesuai file asli. Catatan manual tersimpan di peramban ini saja.</footer></div>`;
   bindEditable(c);
   if(keep){
     const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
