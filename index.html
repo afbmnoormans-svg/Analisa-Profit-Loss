@@ -404,6 +404,8 @@ const state = {
   bkTo: 0,              // 0 = sampai hari puasa terakhir
   bkQ: '',
   bkOther: false,
+  fcMethod: null, fcAdj: 0, fcCost: null, fcPay: 6, fcOex: null, fcRam: true, fcG: null,
+  fcScen: null, fcGap: 5, fcBf: 70, fcM1: 1, fcM2: 12,   // skenario, jarak, porsi breakfast, rentang bulan
   bkComp: false,      // ikutkan baris compliment & entertain
   bkNet: false,        // false = angka kotor, true = nett (dibagi 1,21)
   bkSort: 'pax',
@@ -2630,6 +2632,676 @@ function bkExportTx(){
 }
 
 /* ============================================================
+   TAB FORECAST BUDGET 2027
+   Menyusun angka budget 2027 dari realisasi 2023-2026:
+   pola musim per bulan + tren pertumbuhan per outlet + rasio biaya.
+   Semua dihitung ulang di layar mengikuti asumsi yang dipilih.
+   ============================================================ */
+const FC_TAX = 1.21;
+const FC_OUT = [
+  {id:'resto', nama:"De'Jawis Resto", food:FB.fResto,  bev:FB.bResto,  oth:[FB.tobResto, FB.oiResto],  warna:'#0D6E64'},
+  {id:'rs',    nama:'Room Service',   food:FB.fRS,     bev:FB.bRS,     oth:[FB.tobRS, FB.oiRS],        warna:'#2F4A7A'},
+  {id:'lounge',nama:"De'Jawis Lounge",food:FB.fLounge, bev:FB.bLounge, oth:[FB.tobLounge, FB.oiLounge],warna:'#9A6B23'},
+  {id:'bqt',   nama:'Banquet',        food:FB.fBanquet,bev:FB.bBanquet,oth:[FB.rental, FB.equip, FB.disc], warna:'#A4243B'}
+];
+/* jumlah hari puasa yang jatuh di tiap bulan — dipakai untuk menggeser musim */
+const FC_RAM = {
+  '2023':{3:9, 4:22},   '2024':{3:20, 4:10},  '2025':{3:30, 4:1},
+  '2026':{2:11, 3:20},  '2027':{2:21, 3:10}
+};
+/* susunan baris sheet 01.2 F&B Dept, dipakai untuk rincian budget per uraian.
+   grp: judul kelompok, row: nomor baris di sheet, out: outlet pemiliknya */
+const FC_LINES = [
+  {grp:'FOOD SALES'},
+  {row:FB.fResto,   out:'resto',  sub:'bf'},
+  {row:FB.fRS,      out:'rs'},
+  {row:FB.fLounge,  out:'lounge'},
+  {row:FB.fBanquet, out:'bqt'},
+  {row:FB.foodTotal, tot:'food'},
+  {grp:'BEVERAGE SALES'},
+  {row:FB.bResto,   out:'resto'},
+  {row:FB.bRS,      out:'rs'},
+  {row:FB.bLounge,  out:'lounge'},
+  {row:FB.bBanquet, out:'bqt'},
+  {row:FB.bevTotal, tot:'bev'},
+  {grp:'FB OTHER INCOME'},
+  {row:FB.tobResto, out:'resto'},
+  {row:FB.tobRS,    out:'rs'},
+  {row:FB.tobLounge,out:'lounge'},
+  {row:FB.oiResto,  out:'resto'},
+  {row:FB.oiRS,     out:'rs'},
+  {row:FB.oiLounge, out:'lounge'},
+  {row:FB.rental,   out:'bqt'},
+  {row:FB.equip,    out:'bqt'},
+  {row:FB.disc,     out:'bqt'},
+  {row:FB.otherIncTotal, tot:'oth'},
+  {row:FB.salesTotal, tot:'all'}
+];
+function fcLabel(row){ return (DATA.labels.fb && DATA.labels.fb[row]) || ('Baris '+row); }
+const FC_LEB = {'2023':'22 April 2023','2024':'10 April 2024','2025':'31 Maret 2025','2026':'21 Maret 2026','2027':'10 Maret 2027'};
+
+function fcInit(){
+  if(!state.fcMethod) state.fcMethod='blend';
+  if(state.fcAdj===undefined||state.fcAdj===null) state.fcAdj=0;
+  if(!state.fcCost) state.fcCost='avg2';
+  if(state.fcPay===undefined||state.fcPay===null) state.fcPay=6;
+  if(!state.fcOex) state.fcOex='rev';
+  if(state.fcRam===undefined||state.fcRam===null) state.fcRam=true;
+  if(!state.fcG) state.fcG={resto:'auto', rs:'auto', lounge:'auto', bqt:'auto'};
+  if(!state.fcScen) state.fcScen='mod';
+  if(!state.fcGap) state.fcGap=5;
+  if(state.fcBf===undefined||state.fcBf===null) state.fcBf=70;   /* porsi breakfast dari food De'Jawis */
+  if(!state.fcM1) state.fcM1=1;
+  if(!state.fcM2) state.fcM2=12;
+  if(state.fcM1>state.fcM2){ const t=state.fcM1; state.fcM1=state.fcM2; state.fcM2=t; }
+}
+function fcYears(){ return YEARS.slice().sort(); }
+function fcFull(y){ return closedMonths(y).length===12; }
+function fcM(row,y,m){ return isClosed(y,m) ? fb(row,A,y,m) : null; }
+
+/* pola musim satu baris: rata-rata tertimbang tahun penuh, tahun terbaru diberi bobot lebih besar */
+function fcSeason(row){
+  const full = fcYears().filter(fcFull);
+  const acc = new Array(12).fill(0); let wsum = 0;
+  full.forEach((y,i)=>{
+    const vals = []; let tot = 0;
+    for(let m=1;m<=12;m++){ const x = fb(row,A,y,m)||0; vals.push(x); tot += x; }
+    if(tot<=0) return;
+    const w = i+1;                       /* 2023 bobot 1, 2024 bobot 2, 2025 bobot 3 */
+    for(let m=0;m<12;m++) acc[m] += (vals[m]/tot)*w;
+    wsum += w;
+  });
+  if(!wsum) return new Array(12).fill(1/12);
+  let idx = acc.map(x=>x/wsum);
+  const s = idx.reduce((a,b)=>a+b,0) || 1;
+  idx = idx.map(x=>x/s);
+  return idx;
+}
+/* pola musim yang sudah digeser mengikuti kalender puasa 2027 */
+function fcSeason27(row){
+  const base = fcSeason(row);
+  if(!state.fcRam) return base;
+  const full = fcYears().filter(fcFull);
+  if(!full.length) return base;
+  const share = y=>{ const r=FC_RAM[y]||{}; const tot=Object.values(r).reduce((a,b)=>a+b,0)||1;
+    const a=new Array(12).fill(0); Object.keys(r).forEach(m=>a[+m-1]=r[m]/tot); return a; };
+  /* kelebihan pangsa revenue yang menempel di bulan puasa, rata-rata tahun penuh */
+  let uplift = 0, n = 0;
+  full.forEach(y=>{
+    let tot=0; const v=[];
+    for(let m=1;m<=12;m++){ const x=fb(row,A,y,m)||0; v.push(x); tot+=x; }
+    if(tot<=0) return;
+    const sh = share(y);
+    let u = 0;
+    for(let m=0;m<12;m++) u += sh[m]*((v[m]/tot) - 1/12);
+    uplift += u; n++;
+  });
+  if(!n) return base;
+  uplift /= n;
+  if(uplift<=0) return base;                       /* baris yang tidak terpengaruh puasa */
+  const shHist = new Array(12).fill(0);
+  full.forEach(y=>{ const s=share(y); for(let m=0;m<12;m++) shHist[m]+=s[m]/full.length; });
+  const sh27 = share('2027');
+  let idx = base.map((x,m)=> x + uplift*(sh27[m]-shHist[m]));
+  idx = idx.map(x=>Math.max(x,0));
+  const s = idx.reduce((a,b)=>a+b,0)||1;
+  return idx.map(x=>x/s);
+}
+/* total setahun; tahun yang belum lengkap disetahunkan memakai pola musimnya */
+function fcAnnual(row,y){
+  const cm = closedMonths(y);
+  if(!cm.length) return 0;
+  const sum = cm.reduce((s,m)=>s+(fb(row,A,y,m)||0),0);
+  if(cm.length===12) return sum;
+  const idx = fcSeason(row);
+  const cover = cm.reduce((s,m)=>s+idx[m-1],0);
+  return cover>0 ? sum/cover : sum;
+}
+function fcAnnualGroup(rows,y){ return rows.reduce((s,r)=>s+fcAnnual(r,y),0); }
+
+/* realisasi satu baris untuk rentang bulan tertentu.
+   Bulan yang sudah closing memakai angka aslinya; bulan yang belum
+   memakai perkiraan dari angka setahun dikali bobot musim bulan itu. */
+function fcRange(row,y,m1,m2){
+  const cm = closedMonths(y);
+  if(!cm.length) return 0;
+  if(m1<=1 && m2>=12) return fcAnnual(row,y);
+  const ann = fcAnnual(row,y), idx = fcSeason(row);
+  let s = 0;
+  for(let m=m1;m<=m2;m++) s += (cm.indexOf(m)>=0) ? (fb(row,A,y,m)||0) : ann*idx[m-1];
+  return s;
+}
+function fcRangeGroup(rows,y,m1,m2){ return rows.reduce((s,r)=>s+fcRange(r,y,m1,m2),0); }
+/* bagian pola musim 2027 yang jatuh di rentang bulan terpilih */
+function fcShare27(row,m1,m2){
+  const idx = fcSeason27(row); let s=0;
+  for(let m=m1;m<=m2;m++) s += idx[m-1];
+  return s;
+}
+
+/* pertumbuhan setahun untuk satu kelompok baris */
+function fcGrowth(rows){
+  const ys = fcYears();
+  const tot = ys.map(y=>fcAnnualGroup(rows,y));
+  const g = [];
+  for(let i=1;i<ys.length;i++) g.push(tot[i-1]>0 ? (tot[i]-tot[i-1])/tot[i-1]*100 : 0);
+  const last = tot[tot.length-1], first = tot[0], n = ys.length-1;
+  const cagr = (first>0 && last>0 && n>0) ? (Math.pow(last/first,1/n)-1)*100 : 0;
+  const w = [];
+  let wsum = 0, acc = 0;
+  g.forEach((x,i)=>{ const bobot=i+1; acc += x*bobot; wsum += bobot; w.push(bobot); });
+  const blend = wsum ? acc/wsum : 0;
+  const avg3 = tot.slice(-3).reduce((a,b)=>a+b,0)/Math.min(3,tot.length);
+  return {
+    tot: tot, yoy: g, cagr: cagr, blend: blend,
+    last: g.length ? g[g.length-1] : 0,
+    avg3: last>0 ? (avg3-last)/last*100 : 0,
+    flat: 0
+  };
+}
+function fcPickGrowth(rows, outId){
+  const gr = fcGrowth(rows);
+  const ov = outId && state.fcG ? state.fcG[outId] : 'auto';
+  let g;
+  if(ov && ov!=='auto') g = +ov;
+  else {
+    g = state.fcMethod==='cagr' ? gr.cagr
+      : state.fcMethod==='last' ? gr.last
+      : state.fcMethod==='avg3' ? gr.avg3
+      : state.fcMethod==='flat' ? 0
+      : gr.blend;
+    g = Math.max(-25, Math.min(25, g));            /* tren ekstrem dijinakkan */
+  }
+  return {g:g + (+state.fcAdj||0), auto:(!ov||ov==='auto'), detail:gr};
+}
+
+/* tiga skenario: konservatif / moderat / agresif, jaraknya bisa diatur */
+function fcScenList(){
+  const g = +state.fcGap || 5;
+  return [{id:'kon', nama:'Konservatif', adj:-g, warna:'clay',
+           ket:'banquet belum pulih, event besar tidak kembali'},
+          {id:'mod', nama:'Moderat',     adj:0,  warna:'teal',
+           ket:'tren empat tahun berjalan apa adanya'},
+          {id:'agr', nama:'Agresif',     adj:g,  warna:'indigo',
+           ket:'banquet pulih dan resto terus tumbuh'}];
+}
+function fcScenAktif(){ const L=fcScenList(); return L.filter(x=>x.id===state.fcScen)[0] || L[1]; }
+function fcScenAdj(){ return fcScenAktif().adj; }
+
+/* seluruh perhitungan budget 2027 */
+function fcBuild(scenAdj){
+  fcInit();
+  const extra = scenAdj||0;
+  const ys = fcYears(), lastY = ys[ys.length-1];
+  const out = FC_OUT.map(o=>{
+    const rows = [o.food, o.bev].concat(o.oth);
+    const pick = fcPickGrowth(rows, o.id);
+    const g = pick.g + extra;
+    const base = { food:fcAnnual(o.food,lastY), bev:fcAnnual(o.bev,lastY),
+                   oth:o.oth.reduce((s,r)=>s+fcAnnual(r,lastY),0) };
+    const f = 1 + g/100;
+    const bud = { food:base.food*f, bev:base.bev*f, oth:base.oth*f };
+    bud.total = bud.food+bud.bev+bud.oth;
+    base.total = base.food+base.bev+base.oth;
+    const bulan = new Array(12).fill(0);
+    [[o.food,bud.food],[o.bev,bud.bev]].forEach(([r,tot])=>{
+      const idx = fcSeason27(r);
+      for(let m=0;m<12;m++) bulan[m] += tot*idx[m];
+    });
+    const othTot = o.oth.reduce((s,r)=>s+fcAnnual(r,lastY),0);
+    o.oth.forEach(r=>{
+      const a = fcAnnual(r,lastY), sh = othTot? a/othTot : 0, idx = fcSeason27(r);
+      for(let m=0;m<12;m++) bulan[m] += bud.oth*sh*idx[m];
+    });
+    return Object.assign({}, o, {g:g, auto:pick.auto, detail:pick.detail, base:base, bud:bud, bulan:bulan});
+  });
+
+  const salesBul = new Array(12).fill(0);
+  out.forEach(o=>{ for(let m=0;m<12;m++) salesBul[m]+=o.bulan[m]; });
+  const sales = out.reduce((s,o)=>s+o.bud.total,0);
+  const foodRev = out.reduce((s,o)=>s+o.bud.food,0);
+  const bevRev  = out.reduce((s,o)=>s+o.bud.bev,0);
+  const othRev  = out.reduce((s,o)=>s+o.bud.oth,0);
+
+  /* rasio biaya bahan */
+  const ratio=(costRow, revRow, tahun)=>{
+    let c=0, r=0;
+    tahun.forEach(y=>{ c+=fcAnnual(costRow,y); r+=fcAnnualGroup(revRow,y); });
+    return r>0 ? c/r : 0;
+  };
+  const pilihan = state.fcCost==='last' ? ys.slice(-1) : state.fcCost==='avg3' ? ys.slice(-3) : ys.slice(-2);
+  const fcPct = ratio(FB.costFood, [FB.foodTotal], pilihan);
+  const bcPct = ratio(FB.costBev,  [FB.bevTotal],  pilihan);
+  const cosFood = foodRev*fcPct, cosBev = bevRev*bcPct;
+  const cos = cosFood + cosBev;
+
+  /* payroll & other expenses */
+  const payBase = fcAnnual(FB.payTotal,lastY);
+  const pay = payBase*(1 + (+state.fcPay||0)/100);
+  const oexBase = fcAnnual(FB.oexTotal,lastY);
+  const salesBase = out.reduce((s,o)=>s+o.base.total,0);
+  const oex = state.fcOex==='rev' ? (salesBase>0 ? oexBase*(sales/salesBase) : oexBase)
+                                  : oexBase*(1 + (+state.fcOex||0)/100);
+  const dp = sales - cos - pay - oex;
+
+  /* sebaran bulanan biaya mengikuti pola musimnya sendiri */
+  const spread=(row,tot)=>{ const idx=fcSeason27(row); return idx.map(x=>tot*x); };
+  const cosBul = (()=>{ const a=spread(FB.costFood,cosFood), b=spread(FB.costBev,cosBev);
+                        return a.map((x,i)=>x+b[i]); })();
+  const payBul = spread(FB.payTotal,pay);
+  const oexBul = spread(FB.oexTotal,oex);
+  const dpBul  = salesBul.map((x,i)=>x-cosBul[i]-payBul[i]-oexBul[i]);
+
+  return {ys:ys, lastY:lastY, out:out, sales:sales, foodRev:foodRev, bevRev:bevRev, othRev:othRev,
+          salesBul:salesBul, fcPct:fcPct, bcPct:bcPct, cos:cos, cosFood:cosFood, cosBev:cosBev,
+          pay:pay, payBase:payBase, oex:oex, oexBase:oexBase, dp:dp, salesBase:salesBase,
+          cosBul:cosBul, payBul:payBul, oexBul:oexBul, dpBul:dpBul,
+          basisTahun:pilihan};
+}
+
+function tabForecast(){
+  fcInit();
+  const SC = fcScenAktif();
+  const B = fcBuild(SC.adj), ys = B.ys, lastY = B.lastY;
+  const lastCm = closedMonths(lastY), penuh = lastCm.length===12;
+  const salesLast = B.salesBase;
+  const dpLast = fcAnnual(FB.deptProfit,lastY);
+
+  let h = `<div class="eyebrow">Perencanaan — Food &amp; Beverage</div>
+  <h2 class="ph">Forecast Budget 2027</h2>
+  <p class="lead">Angka budget 2027 disusun dari realisasi ${ys[0]}–${lastY}: pola musim tiap bulan diambil dari tahun-tahun yang sudah lengkap, tren pertumbuhan dihitung per outlet, lalu biaya menyusul lewat rasio terhadap revenue. Tab ini berdiri sendiri — seluruh asumsi diatur di kartu di bawah dan tidak mengubah pengaturan di bagian atas halaman.</p>`;
+
+  if(!penuh) h += `<div class="banner mt"><strong>${lastY} baru ${lastCm.length} bulan closing (${MSHORT[lastCm[0]-1]}–${MSHORT[lastCm[lastCm.length-1]-1]}).</strong> Untuk dijadikan dasar, ${lastY} disetahunkan lebih dulu: realisasi yang ada dibagi dengan bobot musim bulan-bulan tersebut, bukan sekadar dikali dua belas per bulan. Begitu file bulan berikutnya masuk, angka dasar dan seluruh budget di tab ini ikut bergerak sendiri.</div>`;
+
+  /* ---------- panel skenario ---------- */
+  const SLIST = fcScenList().map(x=>Object.assign({}, x, {b:fcBuild(x.adj)}));
+  h += `<div class="card mt"><div class="hd"><h3>Panel skenario</h3>
+    <span class="hint">seluruh isi tab mengikuti skenario yang dipilih di sini</span></div>
+   <div class="bd">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+    ${SLIST.map(x=>{
+      const aktif = x.id===SC.id, warna = 'var(--'+x.warna+')';
+      return `<button data-fcscen="${x.id}" style="text-align:left;cursor:pointer;border:1px solid ${aktif?warna:'var(--line)'};
+        background:${aktif?'#F4F8F8':'var(--card)'};border-left:4px solid ${warna};border-radius:8px;padding:12px 14px;font:inherit;color:inherit">
+        <div style="display:flex;align-items:center;gap:8px">
+          <strong style="font-size:15px">${x.nama}</strong>
+          ${aktif?'<span class="delta up">dipakai</span>':`<span class="dim" style="font-size:11px">${x.adj>0?'+':''}${x.adj} pp</span>`}
+        </div>
+        <div style="font-size:22px;font-weight:700;margin-top:6px;letter-spacing:-.02em">${rpjt(x.b.sales)}</div>
+        <div class="dim" style="font-size:12px">revenue F&amp;B &middot; ${nf1.format(grow(x.b.sales,salesLast))}% vs ${lastY}</div>
+        <div style="font-size:13px;margin-top:8px">Dept profit <strong>${rpjt(x.b.dp)}</strong> <span class="dim">(margin ${pc(x.b.sales?x.b.dp/x.b.sales*100:0)})</span></div>
+        <div class="dim" style="font-size:12px">Rata-rata ${rp(x.b.sales/12)} per bulan</div>
+        <div class="dim" style="font-size:12px;margin-top:6px;font-style:italic">${x.ket}</div>
+      </button>`;
+    }).join('')}
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+      <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Jarak antar skenario</span>
+      ${[3,5,8,10].map(g=>`<button class="btn" data-fcgap="${g}" style="${(+state.fcGap)===g?'background:var(--brass);border-color:var(--brass);color:#fff':''}">&plusmn;${g} pp</button>`).join('')}
+      <span class="dim" style="font-size:12px">Rentang konservatif&ndash;agresif ${rp(SLIST[2].b.sales-SLIST[0].b.sales)} revenue &middot; ${rp(SLIST[2].b.dp-SLIST[0].b.dp)} dept profit</span>
+    </div>
+   </div></div>`;
+
+  /* ---------- asumsi ---------- */
+  const MET = [['blend','Tren tertimbang'],['cagr','CAGR '+ys[0]+'–'+lastY],['last','YoY terakhir'],['avg3','Rata-rata 3 tahun'],['flat','Datar (tanpa tumbuh)']];
+  const ADJ = [-10,-5,0,5,10];
+  const COST = [['avg2','Rata-rata 2 tahun'],['avg3','Rata-rata 3 tahun'],['last',lastY+' berjalan']];
+  const PAY = [0,5,6,8,10];
+  h += `<div class="card mt"><div class="hd"><h3>Asumsi</h3><span class="hint">seluruh angka di bawah dihitung ulang setiap asumsi diubah</span></div>
+   <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Dasar tren</span>
+    ${MET.map(m=>`<button class="btn" data-fcmethod="${m[0]}" style="${state.fcMethod===m[0]?'background:var(--indigo);border-color:var(--indigo);color:#fff':''}">${m[1]}</button>`).join('')}
+    <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted);margin-left:8px">Penyesuaian menyeluruh</span>
+    ${ADJ.map(a=>`<button class="btn" data-fcadj="${a}" style="${(+state.fcAdj)===a?'background:var(--teal);border-color:var(--teal);color:#fff':''}">${a>0?'+':''}${a}%</button>`).join('')}
+   </div>
+   <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-top:0">
+    <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Rasio bahan</span>
+    ${COST.map(c=>`<button class="btn" data-fccost="${c[0]}" style="${state.fcCost===c[0]?'background:var(--brass);border-color:var(--brass);color:#fff':''}">${c[1]}</button>`).join('')}
+    <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted);margin-left:8px">Payroll naik</span>
+    <select id="fcPay" class="btn" style="padding:7px 10px">${PAY.map(p=>`<option value="${p}"${(+state.fcPay)===p?' selected':''}>${p}%</option>`).join('')}</select>
+    <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted);margin-left:8px">Other expenses</span>
+    <select id="fcOex" class="btn" style="padding:7px 10px">
+      <option value="rev"${state.fcOex==='rev'?' selected':''}>Ikut revenue</option>
+      ${[0,5,10].map(p=>`<option value="${p}"${String(state.fcOex)===String(p)?' selected':''}>Naik ${p}%</option>`).join('')}
+    </select>
+    <button class="btn" data-fcram="1" style="${state.fcRam?'background:var(--clay);border-color:var(--clay);color:#fff':''}">Sesuaikan kalender puasa 2027</button>
+   </div>
+   <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-top:0">
+    <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Pertumbuhan per outlet</span>
+    ${B.out.map(o=>`<label style="display:flex;gap:6px;align-items:center;font-size:13px">${o.nama}
+      <select id="fcG_${o.id}" class="btn" style="padding:6px 8px">
+        <option value="auto"${(state.fcG[o.id]==='auto')?' selected':''}>Otomatis (${nf1.format(o.detail[state.fcMethod==='cagr'?'cagr':state.fcMethod==='last'?'last':state.fcMethod==='avg3'?'avg3':state.fcMethod==='flat'?'flat':'blend'])}%)</option>
+        ${[-20,-15,-10,-5,0,5,10,15,20,25,30].map(v=>`<option value="${v}"${String(state.fcG[o.id])===String(v)?' selected':''}>${v>0?'+':''}${v}%</option>`).join('')}
+      </select></label>`).join('')}
+   </div></div>`;
+
+  /* ---------- KPI ---------- */
+  h += `<div class="grid g4 mt">
+    ${kpi('teal','Budget revenue F&amp;B 2027',rpjt(B.sales),chip(B.sales,salesLast,true),`Dasar ${lastY}${penuh?'':' disetahunkan'} ${rpjt(salesLast)} &middot; rata-rata ${rp(B.sales/12)} per bulan`)}
+    ${kpi('indigo','Budget dept profit',rpjt(B.dp),chip(B.dp,dpLast,true),`Margin ${pc(B.sales?B.dp/B.sales*100:0)} berbanding ${pc(salesLast?dpLast/salesLast*100:0)} pada ${lastY}`)}
+    ${kpi('brass','Cost of sales',rpjt(B.cos),`<span class="dim">${pc(B.sales?B.cos/B.sales*100:0)} dari revenue</span>`,`Food ${pc(B.fcPct*100)} &middot; beverage ${pc(B.bcPct*100)} &middot; dasar ${B.basisTahun.join(', ')}`)}
+    ${kpi('clay','Payroll + other expenses',rpjt(B.pay+B.oex),`<span class="dim">${pc(B.sales?(B.pay+B.oex)/B.sales*100:0)} dari revenue</span>`,`Payroll ${rpjt(B.pay)} &middot; other expenses ${rpjt(B.oex)}`)}
+  </div>`;
+
+  /* ---------- dasar per tahun ---------- */
+  const allRows = [];
+  FC_OUT.forEach(o=>{ allRows.push(o.food,o.bev); o.oth.forEach(r=>allRows.push(r)); });
+  h += `<div class="card mt"><div class="hd"><h3>Dari realisasi ke budget</h3><span class="hint">revenue F&amp;B setahun penuh; ${lastY} disetahunkan</span></div>
+   <div class="bd tight"><table class="t">${th(['Ukuran'].concat(ys).concat(['Budget 2027']))}<tbody>
+   <tr><td><strong>Total revenue F&amp;B</strong></td>${ys.map(y=>`<td class="num">${rp(fcAnnualGroup(allRows,y))}</td>`).join('')}<td class="num"><strong>${rp(B.sales)}</strong></td></tr>
+   <tr><td>Pertumbuhan tahunan</td>${ys.map((y,i)=>{ if(!i) return '<td class="num dim">—</td>';
+      const a=fcAnnualGroup(allRows,ys[i]), b=fcAnnualGroup(allRows,ys[i-1]);
+      return `<td class="num">${pc(grow(a,b))}</td>`; }).join('')}<td class="num">${pc(grow(B.sales,salesLast))}</td></tr>
+   <tr><td>Food sales</td>${ys.map(y=>`<td class="num">${rp(fcAnnual(FB.foodTotal,y))}</td>`).join('')}<td class="num">${rp(B.foodRev)}</td></tr>
+   <tr><td>Beverage sales</td>${ys.map(y=>`<td class="num">${rp(fcAnnual(FB.bevTotal,y))}</td>`).join('')}<td class="num">${rp(B.bevRev)}</td></tr>
+   <tr><td>F&amp;B other income</td>${ys.map(y=>`<td class="num">${rp(fcAnnual(FB.otherIncTotal,y))}</td>`).join('')}<td class="num">${rp(B.othRev)}</td></tr>
+   <tr><td>Cost of sales</td>${ys.map(y=>`<td class="num">${rp(fcAnnual(FB.cosTotal,y))}</td>`).join('')}<td class="num">${rp(B.cos)}</td></tr>
+   <tr><td>&nbsp;&nbsp;Food cost %</td>${ys.map(y=>{const r=fcAnnual(FB.foodTotal,y); return `<td class="num">${pc(r?fcAnnual(FB.costFood,y)/r*100:0)}</td>`;}).join('')}<td class="num">${pc(B.fcPct*100)}</td></tr>
+   <tr><td>&nbsp;&nbsp;Beverage cost %</td>${ys.map(y=>{const r=fcAnnual(FB.bevTotal,y); return `<td class="num">${pc(r?fcAnnual(FB.costBev,y)/r*100:0)}</td>`;}).join('')}<td class="num">${pc(B.bcPct*100)}</td></tr>
+   <tr><td>Payroll &amp; related</td>${ys.map(y=>`<td class="num">${rp(fcAnnual(FB.payTotal,y))}</td>`).join('')}<td class="num">${rp(B.pay)}</td></tr>
+   <tr><td>Other expenses</td>${ys.map(y=>`<td class="num">${rp(fcAnnual(FB.oexTotal,y))}</td>`).join('')}<td class="num">${rp(B.oex)}</td></tr>
+   <tr><td><strong>Department profit</strong></td>${ys.map(y=>`<td class="num">${rp(fcAnnual(FB.deptProfit,y))}</td>`).join('')}<td class="num"><strong>${rp(B.dp)}</strong></td></tr>
+   <tr><td>Margin dept profit</td>${ys.map(y=>{const r=fcAnnualGroup(allRows,y); return `<td class="num">${pc(r?fcAnnual(FB.deptProfit,y)/r*100:0)}</td>`;}).join('')}<td class="num">${pc(B.sales?B.dp/B.sales*100:0)}</td></tr>
+   </tbody></table></div></div>`;
+
+  /* ---------- detail per outlet ---------- */
+  h += `<div class="card mt"><div class="hd"><h3>Budget per outlet F&amp;B</h3><span class="hint">inti tab ini — tiap outlet punya tren dan pola musimnya sendiri</span></div>
+   <div class="bd tight"><table class="t">${th(['Outlet'].concat(ys.map(y=>y+' revenue')).concat(['Tren dipakai','Food 2027','Beverage 2027','Lain-lain 2027','<strong>Total 2027</strong>','Porsi']))}<tbody>
+   ${B.out.map(o=>{
+      const rows=[o.food,o.bev].concat(o.oth);
+      const kosong = ys.every(y=>fcAnnualGroup(rows,y)<=0);
+      return `<tr${kosong?' class="dim"':''}><td><strong>${o.nama}</strong></td>
+        ${ys.map(y=>`<td class="num">${rp(fcAnnualGroup(rows,y))}</td>`).join('')}
+        <td class="num">${kosong?'—':`${o.g>=0?'+':''}${nf1.format(o.g)}%${o.auto?'':' <span class="delta flat">manual</span>'}`}</td>
+        <td class="num">${rp(o.bud.food)}</td><td class="num">${rp(o.bud.bev)}</td><td class="num">${rp(o.bud.oth)}</td>
+        <td class="num"><strong>${rp(o.bud.total)}</strong></td>
+        <td class="num">${pc(B.sales?o.bud.total/B.sales*100:0)}</td></tr>`;
+   }).join('')}
+   <tr><td><strong>Total</strong></td>${ys.map(y=>`<td class="num"><strong>${rp(fcAnnualGroup(allRows,y))}</strong></td>`).join('')}
+     <td class="num">${pc(grow(B.sales,salesLast))}</td>
+     <td class="num"><strong>${rp(B.foodRev)}</strong></td><td class="num"><strong>${rp(B.bevRev)}</strong></td>
+     <td class="num"><strong>${rp(B.othRev)}</strong></td><td class="num"><strong>${rp(B.sales)}</strong></td><td class="num">100,0%</td></tr>
+   </tbody></table>
+   <p class="dim" style="margin:10px 0 0">Tren otomatis dihitung dari pertumbuhan tahunan tiap outlet, tahun terbaru diberi bobot lebih besar, lalu dibatasi di rentang &plusmn;25% supaya satu tahun yang tidak wajar tidak menyeret budget. Angka itu bisa ditimpa manual lewat pilihan di kartu asumsi.</p>
+   </div></div>`;
+
+  /* ---------- rincian per uraian sheet 01.2 ---------- */
+  const bfPct = (+state.fcBf||70)/100;
+  const gOut = {}; B.out.forEach(o=>{ gOut[o.id]=o; });
+  const budRow = row=>{
+    for(let i=0;i<B.out.length;i++){
+      const o=B.out[i];
+      if([o.food,o.bev].concat(o.oth).indexOf(row)>=0) return fcAnnual(row,lastY)*(1+o.g/100);
+    }
+    return 0;
+  };
+  const m1 = state.fcM1, m2 = state.fcM2, seluruhTahun = (m1===1 && m2===12);
+  const budRowM = row => budRow(row) * fcShare27(row, m1, m2);
+  const totRow = t => t==='food'?B.foodRev : t==='bev'?B.bevRev : t==='oth'?B.othRev : B.sales;
+  /* realisasi baris total dijumlahkan dari komponennya, bukan dari baris total di sheet,
+     supaya satu kolom tetap konsisten dengan rincian di atasnya */
+  const GRP = {
+    food: B.out.map(o=>o.food),
+    bev:  B.out.map(o=>o.bev),
+    oth:  B.out.reduce((a,o)=>a.concat(o.oth),[]),
+    all:  B.out.reduce((a,o)=>a.concat([o.food,o.bev]).concat(o.oth),[])
+  };
+  const totReal = (t,y) => fcRangeGroup(GRP[t]||[], y, m1, m2);
+  const totBudM = t => (GRP[t]||[]).reduce((a,r)=>a+budRowM(r), 0);
+  const salesM = totBudM('all');
+  const bfBud = gOut.resto ? gOut.resto.bud.food*bfPct : 0;
+  const alBud = gOut.resto ? gOut.resto.bud.food*(1-bfPct) : 0;
+
+  h += `<div class="card mt"><div class="hd"><h3>Rincian budget 2027 per uraian sheet 01.2 F&amp;B Dept</h3>
+    <span class="hint">susunan barisnya sama persis dengan sheet aslinya</span></div>
+   <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:0">
+     <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Komposisi food De'Jawis Resto</span>
+     ${[60,65,70,75,80].map(v=>`<button class="btn" data-fcbf="${v}" style="${(+state.fcBf)===v?'background:var(--teal);border-color:var(--teal);color:#fff':''}">Breakfast ${v}% &middot; a la carte ${100-v}%</button>`).join('')}
+   </div>
+   <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:0;padding-top:8px">
+     <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Rentang bulan</span>
+     <select id="fcM1" class="btn" style="padding:7px 10px">${MONTHS.map((nm,i)=>`<option value="${i+1}"${(i+1)===m1?' selected':''}>${nm}</option>`).join('')}</select>
+     <span class="dim">sampai</span>
+     <select id="fcM2" class="btn" style="padding:7px 10px">${MONTHS.map((nm,i)=>`<option value="${i+1}"${(i+1)===m2?' selected':''}>${nm}</option>`).join('')}</select>
+     ${[[1,12,'Setahun'],[1,6,'Semester 1'],[7,12,'Semester 2'],[1,3,'Kuartal 1']].map(pr=>
+       `<button class="btn" data-fcmr="${pr[0]}-${pr[1]}" style="${(m1===pr[0]&&m2===pr[1])?'background:var(--indigo);border-color:var(--indigo);color:#fff':''}">${pr[2]}</button>`).join('')}
+     <span class="dim" style="font-size:12px;margin-left:auto">${seluruhTahun?'Menampilkan dua belas bulan penuh':`${MONTHS[m1-1]}&ndash;${MONTHS[m2-1]} &middot; ${nf1.format(fcShare27(FB.salesTotal,m1,m2)*100)}% dari setahun`}</span>
+   </div>
+   <div class="bd tight"><table class="t">${th(['Uraian'].concat(ys).concat(['<strong>Budget 2027</strong>','Porsi']))}<tbody>
+   ${seluruhTahun?'':`<tr><td colspan="${ys.length+3}" class="dim" style="font-size:12px">Seluruh kolom di bawah hanya menghitung ${MONTHS[m1-1]}&ndash;${MONTHS[m2-1]}. Untuk tahun berjalan, bulan yang belum closing diisi perkiraan dari pola musimnya.</td></tr>`}
+   ${FC_LINES.map(L=>{
+     if(L.grp) return `<tr style="background:#F4F7F9"><td colspan="${ys.length+3}" style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">${L.grp}</td></tr>`;
+     if(L.tot){
+       const b=totBudM(L.tot);
+       return `<tr style="border-top:1px solid var(--line)"><td><strong>${fcLabel(L.row)}</strong></td>
+         ${ys.map(y=>`<td class="num"><strong>${rp(totReal(L.tot,y))}</strong></td>`).join('')}
+         <td class="num"><strong>${rp(b)}</strong></td><td class="num">${pc(salesM?b/salesM*100:0)}</td></tr>`;
+     }
+     const b=budRowM(L.row);
+     const kosong = ys.every(y=>fcRange(L.row,y,m1,m2)===0) && b===0;
+     let baris = `<tr${kosong?' class="dim"':''}><td>${fcLabel(L.row)}</td>
+       ${ys.map(y=>`<td class="num">${rp(fcRange(L.row,y,m1,m2))}</td>`).join('')}
+       <td class="num"><strong>${rp(b)}</strong></td><td class="num">${pc(salesM?b/salesM*100:0)}</td></tr>`;
+     if(L.sub==='bf'){
+       const bfM = b*bfPct, alM = b*(1-bfPct);
+       baris += `<tr style="background:#F7FAFA"><td style="padding-left:26px">&#8627; <strong>Breakfast</strong> <span class="dim">${nf1.format(bfPct*100)}% dari food De'Jawis</span></td>
+         ${ys.map(()=>`<td class="num dim">belum dipisah</td>`).join('')}
+         <td class="num"><strong>${rp(bfM)}</strong></td><td class="num">${pc(salesM?bfM/salesM*100:0)}</td></tr>
+       <tr style="background:#F7FAFA"><td style="padding-left:26px">&#8627; <strong>Food a la carte</strong> <span class="dim">${nf1.format((1-bfPct)*100)}% dari food De'Jawis</span></td>
+         ${ys.map(()=>`<td class="num dim">belum dipisah</td>`).join('')}
+         <td class="num"><strong>${rp(alM)}</strong></td><td class="num">${pc(salesM?alM/salesM*100:0)}</td></tr>`;
+     }
+     return baris;
+   }).join('')}
+   </tbody></table>
+   <p class="dim" style="margin:10px 0 0">Tiap baris tumbuh mengikuti tren outlet pemiliknya, sehingga jumlahnya tetap sama dengan tabel per outlet di atas. <strong>Breakfast</strong> dan <strong>food a la carte</strong> adalah uraian baru yang belum ada di sheet asli: keduanya memecah <em>De Jawis Resto Food Revenue</em> dengan komposisi ${nf1.format(bfPct*100)} banding ${nf1.format((1-bfPct)*100)}. Karena sheet ${ys[0]}&ndash;${lastY} mencatatnya menyatu, kolom realisasi kedua baris itu sengaja dikosongkan.</p>
+   </div></div>`;
+
+  /* ---------- breakfast bulanan ---------- */
+  const bfBul = gOut.resto ? (()=>{ const idx=fcSeason27(FB.fResto); return idx.map(x=>gOut.resto.bud.food*x); })() : new Array(12).fill(0);
+  h += `<div class="card mt"><div class="hd"><h3>Breakfast dan food a la carte per bulan</h3>
+    <span class="hint">${seluruhTahun?'setahun penuh':MONTHS[m1-1]+'&ndash;'+MONTHS[m2-1]} &middot; mengikuti rentang bulan di kartu atas</span></div>
+   <div class="bd tight"><table class="t">${th(['Bulan','Food De\'Jawis Resto','Breakfast '+nf1.format(bfPct*100)+'%','Food a la carte '+nf1.format((1-bfPct)*100)+'%','Breakfast per hari'])}<tbody>
+   ${MONTHS.map((nm,i)=>{
+     if(i+1<m1 || i+1>m2) return '';
+     const hari = new Date(2027, i+1, 0).getDate();
+     return `<tr><td><strong>${nm}</strong></td><td class="num">${rp(bfBul[i])}</td>
+       <td class="num"><strong>${rp(bfBul[i]*bfPct)}</strong></td>
+       <td class="num">${rp(bfBul[i]*(1-bfPct))}</td>
+       <td class="num dim">${rp(bfBul[i]*bfPct/hari)}</td></tr>`;
+   }).join('')}
+   ${(()=>{
+      let tot=0, hariTot=0;
+      for(let i=m1;i<=m2;i++){ tot+=bfBul[i-1]; hariTot+=new Date(2027,i,0).getDate(); }
+      return `<tr style="border-top:1px solid var(--line)"><td><strong>${seluruhTahun?'Setahun':MONTHS[m1-1]+'\u2013'+MONTHS[m2-1]}</strong></td>
+        <td class="num"><strong>${rp(tot)}</strong></td>
+        <td class="num"><strong>${rp(tot*bfPct)}</strong></td>
+        <td class="num"><strong>${rp(tot*(1-bfPct))}</strong></td>
+        <td class="num dim">${rp(hariTot?tot*bfPct/hariTot:0)}</td></tr>`;
+   })()}
+   </tbody></table>
+   <p class="dim" style="margin:10px 0 0">Kolom terakhir memakai jumlah hari tiap bulan, berguna untuk mengecek kewajaran target breakfast harian terhadap kamar terjual.</p>
+   </div></div>`;
+
+  /* ---------- grafik ---------- */
+  h += `<div class="grid g2 mt">
+   <div class="card"><div class="hd"><h3>Revenue per outlet</h3><span class="hint">realisasi dan budget 2027</span></div><div class="bd">
+     ${barChart({labels:ys.concat(['2027 B']), height:260,
+       series:B.out.filter(o=>ys.some(y=>fcAnnualGroup([o.food,o.bev].concat(o.oth),y)>0))
+         .map(o=>({name:o.nama, color:o.warna,
+           values:ys.map(y=>fcAnnualGroup([o.food,o.bev].concat(o.oth),y)).concat([o.bud.total])}))})}
+   </div></div>
+   <div class="card"><div class="hd"><h3>Struktur biaya menuju dept profit</h3><span class="hint">budget 2027 dibanding ${lastY}</span></div><div class="bd">
+     ${barChart({labels:['Revenue','Cost of sales','Payroll','Other exp','Dept profit'], height:260,
+       series:[{name:lastY+(penuh?'':' disetahunkan'),color:'#8A9AA8',values:[salesLast,fcAnnual(FB.cosTotal,lastY),B.payBase,B.oexBase,dpLast]},
+               {name:'Budget 2027',color:'#0D6E64',values:[B.sales,B.cos,B.pay,B.oex,B.dp]}]})}
+   </div></div>
+  </div>`;
+
+  /* ---------- bulanan ---------- */
+  h += `<div class="card mt"><div class="hd"><h3>Budget bulanan 2027</h3><span class="hint">pola musim dari tahun-tahun penuh${state.fcRam?', sudah digeser mengikuti kalender puasa 2027':''}</span></div>
+   <div class="bd tight"><table class="t">${th(['Bulan','Revenue F&amp;B'].concat(B.out.filter(o=>o.bud.total>0).map(o=>o.nama)).concat(['Cost of sales','Payroll','Other exp','Dept profit','Margin']))}<tbody>
+   ${MONTHS.map((nm,i)=>`<tr><td><strong>${nm}</strong></td>
+     <td class="num">${rp(B.salesBul[i])}</td>
+     ${B.out.filter(o=>o.bud.total>0).map(o=>`<td class="num">${rp(o.bulan[i])}</td>`).join('')}
+     <td class="num">${rp(B.cosBul[i])}</td><td class="num">${rp(B.payBul[i])}</td>
+     <td class="num">${rp(B.oexBul[i])}</td><td class="num">${rp(B.dpBul[i])}</td>
+     <td class="num">${pc(B.salesBul[i]?B.dpBul[i]/B.salesBul[i]*100:0)}</td></tr>`).join('')}
+   <tr><td><strong>Setahun</strong></td><td class="num"><strong>${rp(B.sales)}</strong></td>
+     ${B.out.filter(o=>o.bud.total>0).map(o=>`<td class="num"><strong>${rp(o.bud.total)}</strong></td>`).join('')}
+     <td class="num"><strong>${rp(B.cos)}</strong></td><td class="num"><strong>${rp(B.pay)}</strong></td>
+     <td class="num"><strong>${rp(B.oex)}</strong></td><td class="num"><strong>${rp(B.dp)}</strong></td>
+     <td class="num">${pc(B.sales?B.dp/B.sales*100:0)}</td></tr>
+   </tbody></table></div></div>`;
+
+  const lastBul = MONTHS.map((x,i)=> isClosed(lastY,i+1) ? fb(FB.salesTotal,A,lastY,i+1) : null);
+  h += `<div class="card mt"><div class="hd"><h3>Bentuk tahun 2027</h3><span class="hint">budget bulanan dibanding realisasi tahun-tahun sebelumnya</span></div><div class="bd">
+   ${lineChart({labels:MSHORT, height:280,
+     series:ys.slice(-2).map((y,i)=>({name:y, color:i? '#9A6B23':'#8A9AA8', dash:'5 4',
+       values:MONTHS.map((x,m)=> isClosed(y,m+1) ? fb(FB.salesTotal,A,y,m+1) : null)}))
+       .concat([{name:'Budget 2027', color:'#0D6E64', values:B.salesBul}])})}
+   </div></div>`;
+
+  /* ---------- kalender puasa ---------- */
+  const hari=y=>{const r=FC_RAM[y]||{}; return Object.keys(r).sort((a,b)=>a-b).map(m=>`${r[m]} hari di ${MSHORT[+m-1]}`).join(', ');};
+  h += `<div class="card mt"><div class="hd"><h3>Kalender puasa dan letak musim</h3><span class="hint">alasan bulan puncak 2027 bergeser</span></div>
+   <div class="bd tight"><table class="t">${th(['Tahun','Sebaran hari puasa','Idul Fitri','Bulan puncak revenue F&amp;B'])}<tbody>
+   ${ys.concat(['2027']).map(y=>{
+      let peak='—';
+      if(y!=='2027'){
+        const cm=closedMonths(y); let best=null;
+        cm.forEach(m=>{ const x=fb(FB.salesTotal,A,y,m); if(best===null||x>best.x) best={m:m,x:x}; });
+        if(best) peak=`${MONTHS[best.m-1]} (${rpjt(best.x)})`;
+      } else {
+        let bi=0; B.salesBul.forEach((x,i)=>{ if(x>B.salesBul[bi]) bi=i; });
+        peak=`${MONTHS[bi]} (${rpjt(B.salesBul[bi])}) — budget`;
+      }
+      return `<tr${y==='2027'?' style="background:#F0F6F5"':''}><td><strong>${y}</strong></td><td>${hari(y)}</td><td>${FC_LEB[y]||'—'}</td><td>${peak}</td></tr>`;
+   }).join('')}
+   </tbody></table>
+   <p class="dim" style="margin:10px 0 0">Puasa 2027 jatuh ${hari('2027')} dengan Idul Fitri ${FC_LEB['2027']} — lebih awal daripada tahun-tahun sebelumnya. Kalau pola musim mentah dipakai apa adanya, budget Februari akan terlalu rendah dan April terlalu tinggi. Tombol <em>Sesuaikan kalender puasa 2027</em> memindahkan kelebihan revenue bulan puasa ke bulan yang benar; besarnya diambil dari selisih revenue bulan puasa terhadap rata-rata bulan biasa pada tahun-tahun sebelumnya, bukan angka karangan.</p>
+   </div></div>`;
+
+  /* ---------- skenario ---------- */
+  const scen = SLIST;
+  h += `<div class="card mt"><div class="hd"><h3>Tiga skenario berdampingan</h3><span class="hint">klik barisnya untuk memakai skenario itu &middot; jarak &plusmn;${state.fcGap} poin persen</span></div>
+   <div class="bd tight"><table class="t">${th(['Skenario','Pertumbuhan revenue','Revenue F&amp;B','Cost of sales','Payroll','Other exp','Dept profit','Margin','Rata-rata per bulan'])}<tbody>
+   ${scen.map(s=>`<tr data-fcscen="${s.id}" style="cursor:pointer${s.id===SC.id?';background:#F0F6F5':''}"><td><strong>${s.nama}</strong>${s.id===SC.id?' <span class="delta up">dipakai</span>':' <span class="dim" style="font-size:11px">klik untuk memakai</span>'}</td>
+     <td class="num">${pc(grow(s.b.sales,salesLast))}</td>
+     <td class="num">${rp(s.b.sales)}</td><td class="num">${rp(s.b.cos)}</td><td class="num">${rp(s.b.pay)}</td>
+     <td class="num">${rp(s.b.oex)}</td><td class="num"><strong>${rp(s.b.dp)}</strong></td>
+     <td class="num">${pc(s.b.sales?s.b.dp/s.b.sales*100:0)}</td><td class="num">${rp(s.b.sales/12)}</td></tr>`).join('')}
+   </tbody></table>
+   <p class="dim" style="margin:10px 0 0">Selisih antara konservatif dan agresif sebesar ${rp(scen[2].b.sales-scen[0].b.sales)} revenue dan ${rp(scen[2].b.dp-scen[0].b.dp)} dept profit — itulah rentang yang perlu disepakati sebelum angka dikunci.</p>
+   </div></div>`;
+
+  /* ---------- perbandingan bulanan antar skenario ---------- */
+  h += `<div class="card mt"><div class="hd"><h3>Revenue dan dept profit bulanan pada tiga skenario</h3>
+    <span class="hint">untuk menimbang target tiap bulan sebelum dikunci</span></div>
+   <div class="bd tight"><table class="t">${th(['Bulan'].concat(scen.map(s=>s.nama+' &mdash; revenue')).concat(scen.map(s=>s.nama+' &mdash; dept profit')))}<tbody>
+   ${MONTHS.map((nm,i)=>`<tr><td><strong>${nm}</strong></td>
+     ${scen.map(s=>`<td class="num"${s.id===SC.id?' style="font-weight:700"':''}>${rp(s.b.salesBul[i])}</td>`).join('')}
+     ${scen.map(s=>`<td class="num"${s.id===SC.id?' style="font-weight:700"':''}>${rp(s.b.dpBul[i])}</td>`).join('')}</tr>`).join('')}
+   <tr><td><strong>Setahun</strong></td>
+     ${scen.map(s=>`<td class="num"><strong>${rp(s.b.sales)}</strong></td>`).join('')}
+     ${scen.map(s=>`<td class="num"><strong>${rp(s.b.dp)}</strong></td>`).join('')}</tr>
+   </tbody></table>
+   <p class="dim" style="margin:10px 0 0">Pada skenario ${SC.nama.toLowerCase()}, bulan tersibuk ${(()=>{let bi=0;B.salesBul.forEach((v,i)=>{if(v>B.salesBul[bi])bi=i;});return MONTHS[bi]+' '+rp(B.salesBul[bi]);})()} dan bulan teringan ${(()=>{let si=0;B.salesBul.forEach((v,i)=>{if(v<B.salesBul[si])si=i;});return MONTHS[si]+' '+rp(B.salesBul[si]);})()}. Selisih dua bulan itu yang menentukan kebutuhan tenaga musiman.</p>
+   </div></div>`;
+
+  /* ---------- catatan & unduhan ---------- */
+  h += `<div class="grid g2 mt">
+    <div class="note-box teal"><h4>Cara angka ini dibentuk</h4>
+      <ol style="margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.6">
+        <li>Tiap baris revenue di sheet <strong>01.2 F&amp;B Dept</strong> diambil per bulan, ${ys[0]}–${lastY}.</li>
+        <li>Pola musim dihitung dari tahun yang sudah lengkap dua belas bulan, tahun terbaru berbobot lebih besar.</li>
+        <li>Tahun berjalan disetahunkan dengan membagi realisasinya pada bobot musim bulan yang sudah closing.</li>
+        <li>Pertumbuhan dihitung per outlet, lalu dipakai untuk menaikkan angka dasar ${lastY} menjadi budget 2027.</li>
+        <li>Cost of sales menyusul lewat rasio food cost dan beverage cost; payroll dan other expenses memakai asumsi terpisah.</li>
+        <li>Hasil setahun disebar ke dua belas bulan memakai pola musim masing-masing baris.</li>
+      </ol>
+    </div>
+    <div class="note-box clay"><h4>Yang perlu diingat sebelum dipakai</h4>
+      ${ed('fc-note',`<ul style="margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.6">
+        <li>Banquet menyumbang porsi terbesar dan paling mudah berubah karena satu-dua event besar. Rentang skenario di atas lebih berguna daripada satu angka tunggal.</li>
+        <li>Kolom <em>Food Cover</em> dan <em>Beverage Cover</em> masih nol di file sumber, sehingga budget belum bisa dipecah menjadi jumlah tamu dikali average check.</li>
+        <li>Beverage revenue banquet belum dipisahkan dari harga paket, membuat food cost banquet terlihat lebih tinggi dari sebenarnya.</li>
+        <li>Angka di sini mengikuti nilai yang tercetak di file P&amp;L bulanan, tanpa perhitungan ulang pajak dan service charge.</li>
+      </ul>`)}
+    </div>
+  </div>`;
+
+  h += `<div class="card mt"><div class="hd"><h3>Unduh budget</h3><span class="hint">siap disalin ke format budget resmi</span></div>
+    <div class="bd" style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn primary" id="csvFc">Unduh CSV — budget bulanan 2027</button>
+      <button class="btn" id="csvFcOut">Unduh CSV — budget per outlet</button>
+      <button class="btn" id="csvFcScen">Unduh CSV — perbandingan tiga skenario</button>
+    </div></div>`;
+
+  /* ---------- bacaan ---------- */
+  const bqt = B.out.find(o=>o.id==='bqt'), resto = B.out.find(o=>o.id==='resto');
+  const tren = fcGrowth(allRows);
+  let biBest=0; B.salesBul.forEach((x,i)=>{ if(x>B.salesBul[biBest]) biBest=i; });
+  let biWorst=0; B.salesBul.forEach((x,i)=>{ if(x<B.salesBul[biWorst]) biWorst=i; });
+  h += `<div class="card mt"><div class="hd"><h3>Bacaan cepat</h3><span class="hint">ikut berubah mengikuti asumsi</span></div><div class="bd">
+   <ul style="margin:6px 0 0;padding-left:18px;line-height:1.6">
+    <li><strong>Titik berangkatnya menurun, bukan naik.</strong> Revenue F&amp;B bergerak ${ys.map((y,i)=>i?`${pc(grow(fcAnnualGroup(allRows,ys[i]),fcAnnualGroup(allRows,ys[i-1])))} pada ${y}`:'').filter(Boolean).join(', ')}. Budget 2027 ditaruh di ${rpjt(B.sales)} atau ${pc(grow(B.sales,salesLast))} terhadap ${lastY}${penuh?'':' yang disetahunkan'}.</li>
+    <li><strong>Banquet yang menentukan.</strong> Porsinya ${pc(B.sales?bqt.bud.total/B.sales*100:0)} dari budget. Setiap meleset 10% di banquet menggeser revenue ${rpjt(bqt.bud.total*0.1)} dan dept profit sekitar ${rpjt(bqt.bud.total*0.1*(1-B.fcPct))} — jauh lebih besar daripada seluruh penghematan yang bisa dikejar di other expenses.</li>
+    <li><strong>Resto jadi penyangga.</strong> ${resto.nama} dianggarkan ${rpjt(resto.bud.total)} atau ${pc(B.sales?resto.bud.total/B.sales*100:0)} dari total, dengan tren ${resto.g>=0?'+':''}${nf1.format(resto.g)}%.</li>
+    <li><strong>Bulan terbesar ${MONTHS[biBest]}, terkecil ${MONTHS[biWorst]}.</strong> ${rpjt(B.salesBul[biBest])} berbanding ${rpjt(B.salesBul[biWorst])} — selisih ${pc(B.salesBul[biWorst]?(B.salesBul[biBest]/B.salesBul[biWorst]-1)*100:0)}. Rencana tenaga kerja harian dan stok perlu mengikuti bentuk ini, bukan dibagi rata dua belas.</li>
+    <li><strong>Margin yang dijanjikan ${pc(B.sales?B.dp/B.sales*100:0)}.</strong> Bertahan selama food cost tidak lewat ${pc(B.fcPct*100)} dan payroll tidak naik lebih dari ${state.fcPay}%. Kalau keduanya meleset dua poin, dept profit berkurang sekitar ${rpjt(B.foodRev*0.02 + B.pay*0.02)}.</li>
+   </ul></div></div>`;
+  return h;
+}
+
+function fcExportBulanan(){
+  const SC = fcScenAktif(), B = fcBuild(SC.adj);
+  const rows = [['Bulan','Revenue F&B'].concat(B.out.map(o=>o.nama)).concat(['Cost of sales','Payroll','Other expenses','Dept profit'])];
+  MONTHS.forEach((nm,i)=>rows.push([nm, Math.round(B.salesBul[i])]
+    .concat(B.out.map(o=>Math.round(o.bulan[i])))
+    .concat([Math.round(B.cosBul[i]),Math.round(B.payBul[i]),Math.round(B.oexBul[i]),Math.round(B.dpBul[i])])));
+  rows.push(['TOTAL', Math.round(B.sales)].concat(B.out.map(o=>Math.round(o.bud.total)))
+    .concat([Math.round(B.cos),Math.round(B.pay),Math.round(B.oex),Math.round(B.dp)]));
+  download('Budget-2027-bulanan-'+SC.nama.toLowerCase()+'.csv', toCSV(rows));
+}
+function fcExportOutlet(){
+  const SC = fcScenAktif(), B = fcBuild(SC.adj), ys = B.ys;
+  const rows = [['Outlet','Komponen'].concat(ys).concat(['Budget 2027','Tren dipakai %'])];
+  B.out.forEach(o=>{
+    rows.push([o.nama,'Food'].concat(ys.map(y=>Math.round(fcAnnual(o.food,y)))).concat([Math.round(o.bud.food), nf1.format(o.g)]));
+    rows.push([o.nama,'Beverage'].concat(ys.map(y=>Math.round(fcAnnual(o.bev,y)))).concat([Math.round(o.bud.bev), nf1.format(o.g)]));
+    rows.push([o.nama,'Lain-lain'].concat(ys.map(y=>Math.round(o.oth.reduce((s,r)=>s+fcAnnual(r,y),0)))).concat([Math.round(o.bud.oth), nf1.format(o.g)]));
+  });
+  const bf=(+state.fcBf||70)/100, r0=B.out.filter(o=>o.id==='resto')[0];
+  if(r0){
+    rows.push([]);
+    rows.push(['Pecahan food De\'Jawis Resto','Porsi'].concat(ys.map(()=>'')).concat(['Budget 2027','']));
+    rows.push(['Breakfast', nf1.format(bf*100)+'%'].concat(ys.map(()=>'')).concat([Math.round(r0.bud.food*bf),'']));
+    rows.push(['Food a la carte', nf1.format((1-bf)*100)+'%'].concat(ys.map(()=>'')).concat([Math.round(r0.bud.food*(1-bf)),'']));
+  }
+  download('Budget-2027-per-outlet-'+SC.nama.toLowerCase()+'.csv', toCSV(rows));
+}
+
+function fcExportSkenario(){
+  const L = fcScenList().map(x=>Object.assign({}, x, {b:fcBuild(x.adj)}));
+  const rows = [['Bulan'].concat(L.map(x=>x.nama+' revenue')).concat(L.map(x=>x.nama+' dept profit'))];
+  MONTHS.forEach((nm,i)=>rows.push([nm].concat(L.map(x=>Math.round(x.b.salesBul[i])))
+                                       .concat(L.map(x=>Math.round(x.b.dpBul[i])))));
+  rows.push(['TOTAL'].concat(L.map(x=>Math.round(x.b.sales))).concat(L.map(x=>Math.round(x.b.dp))));
+  rows.push([]);
+  rows.push(['Ukuran'].concat(L.map(x=>x.nama)));
+  [['Revenue F&B', x=>Math.round(x.b.sales)],
+   ['Cost of sales', x=>Math.round(x.b.cos)],
+   ['Payroll', x=>Math.round(x.b.pay)],
+   ['Other expenses', x=>Math.round(x.b.oex)],
+   ['Dept profit', x=>Math.round(x.b.dp)]].forEach(m=>rows.push([m[0]].concat(L.map(m[1]))));
+  rows.push([]);
+  rows.push(['Outlet'].concat(L.map(x=>x.nama)));
+  L[0].b.out.forEach((o,i)=>rows.push([o.nama].concat(L.map(x=>Math.round(x.b.out[i].bud.total)))));
+  download('Budget-2027-tiga-skenario.csv', toCSV(rows));
+}
+
+/* ============================================================
    SHELL APLIKASI
    ============================================================ */
 const TABS=[
@@ -2643,6 +3315,7 @@ const TABS=[
   {id:'ytd',      label:'Kumulatif',    fn:tabYTD},
   {id:'room',     label:'Room Div',      fn:tabRoom},
   {id:'bukber',   label:'Bukber',        fn:tabBukber},
+  {id:'fc2027',   label:'Budget 2027',   fn:tabForecast},
   {id:'tahun',    label:'Antar Tahun',    fn:tabTahun},
   {id:'insight',  label:'Temuan',        fn:tabInsight},
   {id:'data',     label:'Data',         fn:tabData}
@@ -2787,6 +3460,24 @@ document.addEventListener('click',e=>{
   if(e.target.closest('[data-bkrepeat]')){ state.bkRepeat=!state.bkRepeat; rerender(); return; }
   if(e.target.closest('[data-bkother]')){ state.bkOther=!state.bkOther; rerender(); return; }
   if(e.target.closest('[data-bkcomp]')){ state.bkComp=!state.bkComp; rerender(); return; }
+  const fcm=e.target.closest('[data-fcmethod]');
+  if(fcm){ state.fcMethod=fcm.dataset.fcmethod; rerender(); return; }
+  const fca=e.target.closest('[data-fcadj]');
+  if(fca){ state.fcAdj=+fca.dataset.fcadj; rerender(); return; }
+  const fcc=e.target.closest('[data-fccost]');
+  if(fcc){ state.fcCost=fcc.dataset.fccost; rerender(); return; }
+  if(e.target.closest('[data-fcram]')){ state.fcRam=!state.fcRam; rerender(); return; }
+  if(e.target.id==='csvFc'){ fcExportBulanan(); return; }
+  if(e.target.id==='csvFcOut'){ fcExportOutlet(); return; }
+  if(e.target.id==='csvFcScen'){ fcExportSkenario(); return; }
+  const fcs=e.target.closest('[data-fcscen]');
+  if(fcs){ state.fcScen=fcs.dataset.fcscen; rerender(); return; }
+  const fcmr=e.target.closest('[data-fcmr]');
+  if(fcmr){ const pr=fcmr.dataset.fcmr.split('-'); state.fcM1=+pr[0]; state.fcM2=+pr[1]; rerender(); return; }
+  const fcbf=e.target.closest('[data-fcbf]');
+  if(fcbf){ state.fcBf=+fcbf.dataset.fcbf; rerender(); return; }
+  const fcgp=e.target.closest('[data-fcgap]');
+  if(fcgp){ state.fcGap=+fcgp.dataset.fcgap; rerender(); return; }
   const bkn=e.target.closest('[data-bknet]');
   if(bkn){ state.bkNet = bkn.dataset.bknet==='1'; rerender(); return; }
   if(e.target.id==='csvBkGuest'){ bkExportGuests(); return; }
@@ -2807,6 +3498,11 @@ document.addEventListener('change',e=>{
   if(e.target.id==='rFrom'){ state.roomFrom=+e.target.value; if(state.roomTo<state.roomFrom) state.roomTo=state.roomFrom; rerender(); return; }
   if(e.target.id==='rTo'){ state.roomTo=+e.target.value; if(state.roomFrom>state.roomTo) state.roomFrom=state.roomTo; rerender(); return; }
   if(e.target.id==='bkFrom'){ state.bkFrom=+e.target.value; if(state.bkTo<state.bkFrom) state.bkTo=state.bkFrom; rerender(); return; }
+  if(e.target.id==='fcPay'){ state.fcPay=+e.target.value; rerender(); return; }
+  if(e.target.id==='fcOex'){ state.fcOex=e.target.value; rerender(); return; }
+  if(e.target.id==='fcM1'){ state.fcM1=+e.target.value; if(state.fcM2<state.fcM1) state.fcM2=state.fcM1; rerender(); return; }
+  if(e.target.id==='fcM2'){ state.fcM2=+e.target.value; if(state.fcM1>state.fcM2) state.fcM1=state.fcM2; rerender(); return; }
+  if(e.target.id&&e.target.id.indexOf('fcG_')===0){ fcInit(); state.fcG[e.target.id.slice(4)]=e.target.value; rerender(); return; }
   if(e.target.id==='bkTo'){ state.bkTo=+e.target.value; if(state.bkFrom>state.bkTo) state.bkFrom=state.bkTo; rerender(); return; }
 });
 let __bkSearchT=null;
