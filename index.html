@@ -2662,7 +2662,26 @@ function renderChrome(){
     `<button class="tabbtn" role="tab" data-tab="${t.id}" aria-selected="${t.id===state.tab}"><span class="ix">${String(i+1).padStart(2,'0')}</span>${t.label}</button>`).join('');
 }
 
-function render(){
+let __lastCtl = null;
+/* render({keep:true}) mempertahankan posisi gulir — dipakai oleh semua kontrol
+   di dalam tab (filter, sortir, pencarian). Pindah tab tetap kembali ke atas. */
+function rerender(){
+  const el = __lastCtl;
+  let sel = '';
+  if(el){
+    if(el.id) sel = '#' + el.id;
+    else { const k = Object.keys(el.dataset||{})[0]; if(k) sel = '[data-' + k + '="' + el.dataset[k] + '"]'; }
+  }
+  const keepFocus = el && /SELECT|INPUT/.test(el.tagName);
+  render({keep:true});
+  if(keepFocus && sel){
+    const n = document.querySelector(sel);
+    if(n && n.focus){ try{ n.focus({preventScroll:true}); }catch(_){ n.focus(); } }
+  }
+}
+function render(opt){
+  const keep = !!(opt && opt.keep);
+  const sy = keep ? (window.scrollY || document.documentElement.scrollTop || 0) : 0;
   renderChrome();
   document.querySelectorAll('[data-mode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.mode===state.mode));
   document.querySelectorAll('[data-cmp]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.cmp===state.cmp));
@@ -2671,7 +2690,12 @@ function render(){
   c.innerHTML = `<div class="panel on"><div class="print-conf">Dokumen rahasia — Hotel Noormans Semarang${VIEWER?' &middot; dibuka oleh '+esc(VIEWER):''}</div>${tab.fn()}
     <footer class="foot">Sumber: file P&amp;L bulanan Hotel Noormans Semarang, sheet 01. Profit &amp; Lost OK dan 01.2 F&amp;B Dept. Seluruh nilai adalah angka net sesuai file asli. Catatan yang Anda ketik tersimpan di peramban ini saja.</footer></div>`;
   bindEditable(c);
-  window.scrollTo({top:0,behavior:'instant'});
+  if(keep){
+    const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    window.scrollTo({top:Math.min(sy,max),behavior:'instant'});
+  } else {
+    window.scrollTo({top:0,behavior:'instant'});
+  }
   const pp=document.getElementById('pPos');
   if(pp) pp.textContent = `${TABS.findIndex(t=>t.id===state.tab)+1} / ${TABS.length}`;
 }
@@ -2724,25 +2748,26 @@ function exportMonth(m){
 
 /* ---- event ---- */
 document.addEventListener('click',e=>{
+  __lastCtl = (e.target && e.target.closest) ? e.target.closest('button,select,input') : null;
   const y=e.target.closest('[data-year]');
-  if(y){ state.year=y.dataset.year; state.month=lastClosed(state.year); state.detailMonth=state.month; render(); return; }
+  if(y){ state.year=y.dataset.year; state.month=lastClosed(state.year); state.detailMonth=state.month; rerender(); return; }
   const m=e.target.closest('[data-month]');
-  if(m){ state.month=+m.dataset.month; state.detailMonth=state.month; render(); return; }
+  if(m){ state.month=+m.dataset.month; state.detailMonth=state.month; rerender(); return; }
   const md=e.target.closest('[data-mode]');
-  if(md){ state.mode=md.dataset.mode; render(); return; }
+  if(md){ state.mode=md.dataset.mode; rerender(); return; }
   const cp=e.target.closest('[data-cmp]');
-  if(cp){ state.cmp=cp.dataset.cmp; render(); return; }
+  if(cp){ state.cmp=cp.dataset.cmp; rerender(); return; }
   const ry=e.target.closest('[data-ryear]');
-  if(ry){ state.roomYear=ry.dataset.ryear; render(); return; }
+  if(ry){ state.roomYear=ry.dataset.ryear; rerender(); return; }
   const rp_=e.target.closest('[data-rpreset]');
   if(rp_){
     const cm=rmClosedMonths(state.roomYear);
     if(rp_.dataset.rpreset==='ytd'){ state.roomFrom=1; state.roomTo=cm.length?cm[cm.length-1]:12; }
     else { state.roomFrom=1; state.roomTo=12; }
-    render(); return;
+    rerender(); return;
   }
   const sc=e.target.closest('[data-scope]');
-  if(sc){ state.yoyScope=sc.dataset.scope; render(); return; }
+  if(sc){ state.yoyScope=sc.dataset.scope; rerender(); return; }
   const bky=e.target.closest('[data-bkyear]');
   if(bky){
     const yy=bky.dataset.bkyear;
@@ -2753,23 +2778,23 @@ document.addEventListener('click',e=>{
       if(i>=0){ if(state.bkYears.length>1) state.bkYears.splice(i,1); }
       else { state.bkYears.push(yy); state.bkYears.sort(); }
     }
-    render(); return;
+    rerender(); return;
   }
   const bko=e.target.closest('[data-bkoutlet]');
-  if(bko){ state.bkOutlet=bko.dataset.bkoutlet; render(); return; }
+  if(bko){ state.bkOutlet=bko.dataset.bkoutlet; rerender(); return; }
   const bks=e.target.closest('[data-bksort]');
-  if(bks){ state.bkSort=bks.dataset.bksort; render(); return; }
-  if(e.target.closest('[data-bkrepeat]')){ state.bkRepeat=!state.bkRepeat; render(); return; }
-  if(e.target.closest('[data-bkother]')){ state.bkOther=!state.bkOther; render(); return; }
-  if(e.target.closest('[data-bkcomp]')){ state.bkComp=!state.bkComp; render(); return; }
+  if(bks){ state.bkSort=bks.dataset.bksort; rerender(); return; }
+  if(e.target.closest('[data-bkrepeat]')){ state.bkRepeat=!state.bkRepeat; rerender(); return; }
+  if(e.target.closest('[data-bkother]')){ state.bkOther=!state.bkOther; rerender(); return; }
+  if(e.target.closest('[data-bkcomp]')){ state.bkComp=!state.bkComp; rerender(); return; }
   const bkn=e.target.closest('[data-bknet]');
-  if(bkn){ state.bkNet = bkn.dataset.bknet==='1'; render(); return; }
+  if(bkn){ state.bkNet = bkn.dataset.bknet==='1'; rerender(); return; }
   if(e.target.id==='csvBkGuest'){ bkExportGuests(); return; }
   if(e.target.id==='csvBkTx'){ bkExportTx(); return; }
   const tb=e.target.closest('[data-tab]');
   if(tb){ state.tab=tb.dataset.tab; render(); return; }
-  if(e.target.id==='dmPrev'){ const cm=state.detailMonth||state.month; if(cm>1){state.detailMonth=cm-1; render();} return; }
-  if(e.target.id==='dmNext'){ const cm=state.detailMonth||state.month; const mx=Math.max(...monthsIn(state.year)); if(cm<mx){state.detailMonth=cm+1; render();} return; }
+  if(e.target.id==='dmPrev'){ const cm=state.detailMonth||state.month; if(cm>1){state.detailMonth=cm-1; rerender();} return; }
+  if(e.target.id==='dmNext'){ const cm=state.detailMonth||state.month; const mx=Math.max(...monthsIn(state.year)); if(cm<mx){state.detailMonth=cm+1; rerender();} return; }
   if(e.target.id==='csvBulan'){ exportMonth(state.detailMonth||state.month); return; }
   if(e.target.id==='csvFB'){ exportSheet('fb'); return; }
   if(e.target.id==='csvPL'){ exportSheet('pl'); return; }
@@ -2777,18 +2802,25 @@ document.addEventListener('click',e=>{
   if(e.target.id==='resetNotes'){ resetNotes(); return; }
 });
 document.addEventListener('change',e=>{
-  if(e.target.id==='detailMonthSel'){ state.detailMonth=+e.target.value; render(); return; }
-  if(e.target.id==='rFrom'){ state.roomFrom=+e.target.value; if(state.roomTo<state.roomFrom) state.roomTo=state.roomFrom; render(); return; }
-  if(e.target.id==='rTo'){ state.roomTo=+e.target.value; if(state.roomFrom>state.roomTo) state.roomFrom=state.roomTo; render(); return; }
-  if(e.target.id==='bkFrom'){ state.bkFrom=+e.target.value; if(state.bkTo<state.bkFrom) state.bkTo=state.bkFrom; render(); return; }
-  if(e.target.id==='bkTo'){ state.bkTo=+e.target.value; if(state.bkFrom>state.bkTo) state.bkFrom=state.bkTo; render(); return; }
+  __lastCtl = e.target;
+  if(e.target.id==='detailMonthSel'){ state.detailMonth=+e.target.value; rerender(); return; }
+  if(e.target.id==='rFrom'){ state.roomFrom=+e.target.value; if(state.roomTo<state.roomFrom) state.roomTo=state.roomFrom; rerender(); return; }
+  if(e.target.id==='rTo'){ state.roomTo=+e.target.value; if(state.roomFrom>state.roomTo) state.roomFrom=state.roomTo; rerender(); return; }
+  if(e.target.id==='bkFrom'){ state.bkFrom=+e.target.value; if(state.bkTo<state.bkFrom) state.bkTo=state.bkFrom; rerender(); return; }
+  if(e.target.id==='bkTo'){ state.bkTo=+e.target.value; if(state.bkFrom>state.bkTo) state.bkFrom=state.bkTo; rerender(); return; }
 });
+let __bkSearchT=null;
 document.addEventListener('input',e=>{
   if(e.target.id!=='bkSearch') return;
   state.bkQ=e.target.value;
-  render();
-  const el=document.getElementById('bkSearch');
-  if(el){ el.focus(); el.setSelectionRange(el.value.length,el.value.length); }
+  const pos=e.target.selectionStart;
+  clearTimeout(__bkSearchT);
+  __bkSearchT=setTimeout(()=>{
+    __lastCtl=null;
+    render({keep:true});
+    const el=document.getElementById('bkSearch');
+    if(el){ el.focus({preventScroll:true}); try{ el.setSelectionRange(pos,pos); }catch(_){} }
+  },180);
 });
 
 /* ---- mode presentasi ---- */
