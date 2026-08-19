@@ -296,6 +296,7 @@ footer.foot{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);fo
           <button data-cmp="lm" aria-pressed="false">Bulan lalu</button>
           <button data-cmp="ly" aria-pressed="false">Tahun lalu</button>
         </div>
+        <button class="ghost" id="xlsBtn" title="Unduh isi tab yang sedang dibuka sebagai berkas Excel">Export Excel</button>
         <button class="ghost" id="presBtn">Mode presentasi</button>
       </div>
     </div>
@@ -2270,7 +2271,9 @@ function tabData(){
   </div>`;
 
   h+=`<div class="card mt"><div class="hd"><h3>Unduh data</h3><span class="hint">perlakukan hasil unduhan sebagai dokumen rahasia</span></div><div class="bd" style="display:flex;gap:10px;flex-wrap:wrap">
-    <button class="btn primary" id="csvFB">Unduh CSV — F&amp;B Dept ${y} (12 bulan)</button>
+    <button class="btn primary" id="xlsAll">Unduh Excel &mdash; seluruh tab dalam satu buku kerja</button>
+    <button class="btn" id="xlsTab">Unduh Excel &mdash; tab ini saja</button>
+    <button class="btn" id="csvFB">Unduh CSV — F&amp;B Dept ${y} (12 bulan)</button>
     <button class="btn" id="csvPL">Unduh CSV — P&amp;L hotel ${y} (12 bulan)</button>
     <button class="btn" id="csvAll">Unduh CSV — rekap semua tahun (F&amp;B)</button>
   </div></div>`;
@@ -3302,6 +3305,274 @@ function fcExportSkenario(){
 }
 
 /* ============================================================
+   EKSPOR SPREADSHEET
+   Mengubah tabel yang sedang tampil menjadi berkas .xlsx asli
+   (satu tab = satu berkas, tiap kartu jadi satu sheet).
+   Tidak memakai pustaka luar: berkas xlsx disusun sendiri
+   sebagai arsip ZIP tanpa kompresi.
+   ============================================================ */
+
+/* ---- CRC32 untuk header ZIP ---- */
+const XZ_CRC = (function(){
+  const t = new Uint32Array(256);
+  for(let n=0;n<256;n++){
+    let c = n;
+    for(let k=0;k<8;k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function xzCrc32(bytes){
+  let c = 0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++) c = XZ_CRC[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function xzBytes(str){
+  if(window.TextEncoder) return new TextEncoder().encode(str);
+  const out=[]; for(let i=0;i<str.length;i++){
+    let c=str.charCodeAt(i);
+    if(c<0x80) out.push(c);
+    else if(c<0x800){ out.push(0xC0|c>>6, 0x80|(c&63)); }
+    else { out.push(0xE0|c>>12, 0x80|((c>>6)&63), 0x80|(c&63)); }
+  }
+  return new Uint8Array(out);
+}
+/* ---- penyusun ZIP metode store ---- */
+function xzZip(files){
+  const chunks=[], dir=[]; let off=0;
+  const u16=v=>[v&255,(v>>8)&255];
+  const u32=v=>[v&255,(v>>8)&255,(v>>16)&255,(v>>24)&255];
+  files.forEach(f=>{
+    const nama=xzBytes(f.name), isi=xzBytes(f.data), crc=xzCrc32(isi);
+    const lok=[].concat([0x50,0x4b,0x03,0x04],u16(20),u16(0),u16(0),u16(0),u16(0),
+      u32(crc),u32(isi.length),u32(isi.length),u16(nama.length),u16(0));
+    chunks.push(new Uint8Array(lok), nama, isi);
+    dir.push({nama:nama, crc:crc, len:isi.length, off:off});
+    off += lok.length + nama.length + isi.length;
+  });
+  let dlen=0;
+  dir.forEach(d=>{
+    const c=[].concat([0x50,0x4b,0x01,0x02],u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),
+      u32(d.crc),u32(d.len),u32(d.len),u16(d.nama.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(d.off));
+    chunks.push(new Uint8Array(c), d.nama);
+    dlen += c.length + d.nama.length;
+  });
+  chunks.push(new Uint8Array([].concat([0x50,0x4b,0x05,0x06],u16(0),u16(0),
+    u16(dir.length),u16(dir.length),u32(dlen),u32(off),u16(0))));
+  return new Blob(chunks,{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+/* ---- helper XML ---- */
+function xzEsc(s){
+  return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/\x00-\x08|\x0b|\x0c|\x0e-\x1f/g,'');
+}
+function xzCol(n){ let s=''; n++; while(n>0){ const r=(n-1)%26; s=String.fromCharCode(65+r)+s; n=(n-r-1)/26; } return s; }
+
+/* ---- satu sheet dari matriks nilai ----
+   sel bisa berupa {v:angka, s:gaya} atau teks biasa */
+function xzSheet(rows){
+  let x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    + '<sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="46" customWidth="1"/>'
+    + '<col min="2" max="40" width="18" customWidth="1"/></cols><sheetData>';
+  rows.forEach((baris,ri)=>{
+    x += '<row r="'+(ri+1)+'">';
+    baris.forEach((sel,ci)=>{
+      if(sel===null || sel===undefined || sel==='') return;
+      const ref = xzCol(ci)+(ri+1);
+      const gaya = (sel && typeof sel==='object' && sel.s) ? ' s="'+sel.s+'"' : '';
+      const nilai = (sel && typeof sel==='object') ? sel.v : sel;
+      if(typeof nilai === 'number' && isFinite(nilai)){
+        x += '<c r="'+ref+'"'+gaya+'><v>'+nilai+'</v></c>';
+      } else {
+        x += '<c r="'+ref+'" t="inlineStr"'+gaya+'><is><t xml:space="preserve">'+xzEsc(nilai)+'</t></is></c>';
+      }
+    });
+    x += '</row>';
+  });
+  return x + '</sheetData></worksheet>';
+}
+/* gaya: 0 biasa, 1 judul besar, 2 kepala tabel, 3 tebal, 4 angka rupiah, 5 persen */
+const XZ_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+ + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+ + '<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="0.0&quot;%&quot;"/></numFmts>'
+ + '<fonts count="4"><font><sz val="11"/><name val="Calibri"/></font>'
+ + '<font><b/><sz val="14"/><name val="Calibri"/></font>'
+ + '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
+ + '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+ + '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+ + '<fill><patternFill patternType="solid"><fgColor rgb="FF1F3A5F"/><bgColor indexed="64"/></patternFill></fill></fills>'
+ + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+ + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+ + '<cellXfs count="6">'
+ + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+ + '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+ + '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+ + '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+ + '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+ + '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+ + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+
+/* ---- rakit berkas xlsx ---- */
+function xzBuild(sheets){
+  const n = sheets.length;
+  const ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+    + '<Default Extension="xml" ContentType="application/xml"/>'
+    + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+    + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+    + sheets.map((s,i)=>'<Override PartName="/xl/worksheets/sheet'+(i+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('')
+    + '</Types>';
+  const rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+    + '</Relationships>';
+  const wb = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    + 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+    + sheets.map((s,i)=>'<sheet name="'+xzEsc(s.nama)+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>').join('')
+    + '</sheets></workbook>';
+  const wbr = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + sheets.map((s,i)=>'<Relationship Id="rId'+(i+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>').join('')
+    + '<Relationship Id="rId'+(n+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    + '</Relationships>';
+  const files = [
+    {name:'[Content_Types].xml', data:ct},
+    {name:'_rels/.rels', data:rels},
+    {name:'xl/workbook.xml', data:wb},
+    {name:'xl/_rels/workbook.xml.rels', data:wbr},
+    {name:'xl/styles.xml', data:XZ_STYLES}
+  ];
+  sheets.forEach((s,i)=>files.push({name:'xl/worksheets/sheet'+(i+1)+'.xml', data:xzSheet(s.rows)}));
+  return xzZip(files);
+}
+function xzSimpan(namaBerkas, sheets){
+  const b = xzBuild(sheets);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(b); a.download = namaBerkas; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+}
+
+/* ---- membaca angka dari teks yang sudah diformat ---- */
+function xzAngka(teks){
+  const t = String(teks).trim();
+  if(!t) return null;
+  if(/^(—|-|–|n\/a|tidak ada|belum dipisah)$/i.test(t)) return null;
+  const bersih = t.replace(/\s/g,'').replace(/^Rp/i,'').replace(/%$/,'')
+                  .replace(/\u2212/g,'-').replace(/\./g,'').replace(/,/g,'.');
+  if(!/^-?\d+(\.\d+)?$/.test(bersih)) return null;
+  const n = parseFloat(bersih);
+  return isFinite(n) ? n : null;
+}
+function xzSel(td){
+  const teks = (td.textContent||'').replace(/\s+/g,' ').trim();
+  const n = xzAngka(teks);
+  if(n===null) return teks;
+  if(/%/.test(teks)) return {v:n, s:5};
+  if(/^Rp/i.test(teks) || Math.abs(n)>=1000) return {v:n, s:4};
+  return {v:n, s:0};
+}
+/* ---- ubah satu <table> jadi matriks ---- */
+function xzTabel(tabel){
+  const rows=[];
+  [...tabel.querySelectorAll('tr')].forEach(tr=>{
+    const sel=[...tr.children];
+    if(!sel.length) return;
+    const kepala = tr.closest('thead') || sel.every(c=>c.tagName==='TH');
+    const baris = sel.map(td=>{
+      /* kepala tabel selalu disimpan sebagai teks supaya tahun tidak
+         berubah jadi angka dan lebar kolomnya tetap terbaca */
+      if(kepala) return {v:(td.textContent||'').replace(/\s+/g,' ').trim(), s:2};
+      return xzSel(td);
+    });
+    const span = sel[0] && +(sel[0].getAttribute('colspan')||1);
+    if(span>1 && sel.length===1) rows.push([{v:baris[0].v!==undefined?baris[0].v:baris[0], s:3}]);
+    else rows.push(baris);
+  });
+  return rows;
+}
+/* ---- nama sheet aman untuk Excel ---- */
+function xzNama(judul, dipakai){
+  let n = String(judul||'Sheet').replace(/[\\\/\?\*\[\]:]/g,' ').replace(/\s+/g,' ').trim().slice(0,28) || 'Sheet';
+  let asli = n, i = 2;
+  while(dipakai[n.toLowerCase()]){ n = (asli.slice(0,26) + ' ' + i).trim(); i++; }
+  dipakai[n.toLowerCase()] = 1;
+  return n;
+}
+/* ---- kumpulkan seluruh kartu bertabel dari satu potongan HTML ---- */
+function xzDariHTML(html, judulTab){
+  const box = document.createElement('div');
+  box.innerHTML = html;
+  const dipakai = {}, sheets = [];
+  const ringkas = [[{v:judulTab, s:1}], []];
+
+  /* KPI diringkas jadi satu sheet pembuka */
+  const kpi = [...box.querySelectorAll('.kpi')];
+  if(kpi.length){
+    ringkas.push([{v:'Angka utama', s:3}]);
+    ringkas.push([{v:'Ukuran', s:2},{v:'Nilai', s:2},{v:'Keterangan', s:2}]);
+    kpi.forEach(k=>{
+      const lb=k.querySelector('.lb'), vl=k.querySelector('.vl'), sb=k.querySelector('.sb');
+      ringkas.push([ lb?lb.textContent.trim():'', vl?xzSel(vl):'', sb?sb.textContent.replace(/\s+/g,' ').trim():'' ]);
+    });
+    ringkas.push([]);
+  }
+  const lead = box.querySelector('.lead');
+  if(lead){ ringkas.push([{v:'Catatan', s:3}]); ringkas.push([lead.textContent.replace(/\s+/g,' ').trim()]); }
+  if(ringkas.length>2) sheets.push({nama:xzNama('Ringkasan', dipakai), rows:ringkas});
+
+  [...box.querySelectorAll('.card')].forEach(card=>{
+    const tabel = card.querySelector('table');
+    if(!tabel) return;
+    const h3 = card.querySelector('h3');
+    const judul = h3 ? h3.textContent.replace(/\s+/g,' ').trim() : 'Tabel';
+    const hint = card.querySelector('.hint');
+    const rows = [[{v:judul, s:1}]];
+    if(hint) rows.push([hint.textContent.replace(/\s+/g,' ').trim()]);
+    rows.push([]);
+    [...card.querySelectorAll('table')].forEach((t,i)=>{
+      if(i) rows.push([]);
+      xzTabel(t).forEach(r=>rows.push(r));
+    });
+    sheets.push({nama:xzNama(judul, dipakai), rows:rows});
+  });
+  return sheets;
+}
+function xzJudulTab(id){
+  const t = TABS.filter(x=>x.id===id)[0];
+  return t ? t.label : id;
+}
+function xzSlug(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
+
+/* ---- ekspor tab yang sedang dibuka ---- */
+function exportTabExcel(){
+  const id = state.tab, judul = xzJudulTab(id);
+  const isi = document.getElementById('content');
+  const sheets = xzDariHTML(isi.innerHTML, judul);
+  if(!sheets.length){ alert('Tab ini tidak memuat tabel yang bisa diekspor.'); return; }
+  xzSimpan('Dashboard-'+xzSlug(judul)+'-'+state.year+'.xlsx', sheets);
+}
+/* ---- ekspor seluruh tab jadi satu buku kerja ---- */
+function exportSemuaTabExcel(){
+  const dipakai = {}, semua = [];
+  const daftar = [[{v:'Isi buku kerja', s:1}],[],[{v:'Tab', s:2},{v:'Jumlah sheet', s:2}]];
+  const tabAsli = state.tab;
+  TABS.forEach(t=>{
+    let html='';
+    try{ state.tab = t.id; html = t.fn(); }catch(err){ html=''; }
+    const s = xzDariHTML(html, t.label);
+    daftar.push([t.label, s.length]);
+    s.forEach(x=>{ x.nama = xzNama(t.label.slice(0,12)+' — '+x.nama, dipakai); semua.push(x); });
+  });
+  state.tab = tabAsli;
+  if(!semua.length){ alert('Tidak ada tabel yang bisa diekspor.'); return; }
+  semua.unshift({nama:xzNama('Daftar isi', dipakai), rows:daftar});
+  xzSimpan('Dashboard-lengkap-'+state.year+'.xlsx', semua);
+}
+
+/* ============================================================
    SHELL APLIKASI
    ============================================================ */
 const TABS=[
@@ -3467,6 +3738,9 @@ document.addEventListener('click',e=>{
   const fcc=e.target.closest('[data-fccost]');
   if(fcc){ state.fcCost=fcc.dataset.fccost; rerender(); return; }
   if(e.target.closest('[data-fcram]')){ state.fcRam=!state.fcRam; rerender(); return; }
+  if(e.target.id==='xlsBtn'){ exportTabExcel(); return; }
+  if(e.target.id==='xlsAll'){ exportSemuaTabExcel(); return; }
+  if(e.target.id==='xlsTab'){ exportTabExcel(); return; }
   if(e.target.id==='csvFc'){ fcExportBulanan(); return; }
   if(e.target.id==='csvFcOut'){ fcExportOutlet(); return; }
   if(e.target.id==='csvFcScen'){ fcExportSkenario(); return; }
