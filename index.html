@@ -2941,21 +2941,29 @@ function tabForecast(){
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
       <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Jarak antar skenario</span>
       ${[3,5,8,10].map(g=>`<button class="btn" data-fcgap="${g}" style="${(+state.fcGap)===g?'background:var(--brass);border-color:var(--brass);color:#fff':''}">&plusmn;${g} pp</button>`).join('')}
+      <select id="fcGapSel" class="btn" style="padding:7px 10px" title="jarak lain, langkah satu poin persen">
+        ${(()=>{ let o=''; for(let i=1;i<=15;i++) o+=`<option value="${i}"${(+state.fcGap)===i?' selected':''}>&plusmn;${i} pp</option>`; return o; })()}
+      </select>
       <span class="dim" style="font-size:12px">Rentang konservatif&ndash;agresif ${rp(SLIST[2].b.sales-SLIST[0].b.sales)} revenue &middot; ${rp(SLIST[2].b.dp-SLIST[0].b.dp)} dept profit</span>
     </div>
    </div></div>`;
 
   /* ---------- asumsi ---------- */
   const MET = [['blend','Tren tertimbang'],['cagr','CAGR '+ys[0]+'–'+lastY],['last','YoY terakhir'],['avg3','Rata-rata 3 tahun'],['flat','Datar (tanpa tumbuh)']];
+  const PCT15 = []; for(let i=0;i<=15;i++) PCT15.push(i);      /* 0% sampai 15% */
+  const ADJ15 = []; for(let i=-15;i<=15;i++) ADJ15.push(i);     /* -15% sampai +15% */
   const ADJ = [-10,-5,0,5,10];
   const COST = [['avg2','Rata-rata 2 tahun'],['avg3','Rata-rata 3 tahun'],['last',lastY+' berjalan']];
-  const PAY = [0,5,6,8,10];
+  const PAY = PCT15;
   h += `<div class="card mt"><div class="hd"><h3>Asumsi</h3><span class="hint">seluruh angka di bawah dihitung ulang setiap asumsi diubah</span></div>
    <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Dasar tren</span>
     ${MET.map(m=>`<button class="btn" data-fcmethod="${m[0]}" style="${state.fcMethod===m[0]?'background:var(--indigo);border-color:var(--indigo);color:#fff':''}">${m[1]}</button>`).join('')}
     <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted);margin-left:8px">Penyesuaian menyeluruh</span>
     ${ADJ.map(a=>`<button class="btn" data-fcadj="${a}" style="${(+state.fcAdj)===a?'background:var(--teal);border-color:var(--teal);color:#fff':''}">${a>0?'+':''}${a}%</button>`).join('')}
+    <select id="fcAdjSel" class="btn" style="padding:7px 10px" title="pilih persen lain, langkah satu persen">
+      ${ADJ15.map(a=>`<option value="${a}"${(+state.fcAdj)===a?' selected':''}>${a>0?'+':''}${a}%</option>`).join('')}
+    </select>
    </div>
    <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-top:0">
     <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Rasio bahan</span>
@@ -2965,7 +2973,7 @@ function tabForecast(){
     <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted);margin-left:8px">Other expenses</span>
     <select id="fcOex" class="btn" style="padding:7px 10px">
       <option value="rev"${state.fcOex==='rev'?' selected':''}>Ikut revenue</option>
-      ${[0,5,10].map(p=>`<option value="${p}"${String(state.fcOex)===String(p)?' selected':''}>Naik ${p}%</option>`).join('')}
+      ${PCT15.map(p=>`<option value="${p}"${String(state.fcOex)===String(p)?' selected':''}>Naik ${p}%</option>`).join('')}
     </select>
     <button class="btn" data-fcram="1" style="${state.fcRam?'background:var(--clay);border-color:var(--clay);color:#fff':''}">Sesuaikan kalender puasa 2027</button>
    </div>
@@ -2974,7 +2982,7 @@ function tabForecast(){
     ${B.out.map(o=>`<label style="display:flex;gap:6px;align-items:center;font-size:13px">${o.nama}
       <select id="fcG_${o.id}" class="btn" style="padding:6px 8px">
         <option value="auto"${(state.fcG[o.id]==='auto')?' selected':''}>Otomatis (${nf1.format(o.detail[state.fcMethod==='cagr'?'cagr':state.fcMethod==='last'?'last':state.fcMethod==='avg3'?'avg3':state.fcMethod==='flat'?'flat':'blend'])}%)</option>
-        ${[-20,-15,-10,-5,0,5,10,15,20,25,30].map(v=>`<option value="${v}"${String(state.fcG[o.id])===String(v)?' selected':''}>${v>0?'+':''}${v}%</option>`).join('')}
+        ${ADJ15.map(v=>`<option value="${v}"${String(state.fcG[o.id])===String(v)?' selected':''}>${v>0?'+':''}${v}%</option>`).join('')}
       </select></label>`).join('')}
    </div></div>`;
 
@@ -3060,6 +3068,9 @@ function tabForecast(){
    <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:0">
      <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Komposisi food De'Jawis Resto</span>
      ${[60,65,70,75,80].map(v=>`<button class="btn" data-fcbf="${v}" style="${(+state.fcBf)===v?'background:var(--teal);border-color:var(--teal);color:#fff':''}">Breakfast ${v}% &middot; a la carte ${100-v}%</button>`).join('')}
+     <select id="fcBfSel" class="btn" style="padding:7px 10px" title="komposisi lain, langkah lima persen">
+       ${(()=>{ let o=''; for(let v=50;v<=90;v+=5) o+=`<option value="${v}"${(+state.fcBf)===v?' selected':''}>Breakfast ${v}% &middot; a la carte ${100-v}%</option>`; return o; })()}
+     </select>
    </div>
    <div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:0;padding-top:8px">
      <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--muted)">Rentang bulan</span>
@@ -3774,6 +3785,9 @@ document.addEventListener('change',e=>{
   if(e.target.id==='bkFrom'){ state.bkFrom=+e.target.value; if(state.bkTo<state.bkFrom) state.bkTo=state.bkFrom; rerender(); return; }
   if(e.target.id==='fcPay'){ state.fcPay=+e.target.value; rerender(); return; }
   if(e.target.id==='fcOex'){ state.fcOex=e.target.value; rerender(); return; }
+  if(e.target.id==='fcAdjSel'){ state.fcAdj=+e.target.value; rerender(); return; }
+  if(e.target.id==='fcGapSel'){ state.fcGap=+e.target.value; rerender(); return; }
+  if(e.target.id==='fcBfSel'){ state.fcBf=+e.target.value; rerender(); return; }
   if(e.target.id==='fcM1'){ state.fcM1=+e.target.value; if(state.fcM2<state.fcM1) state.fcM2=state.fcM1; rerender(); return; }
   if(e.target.id==='fcM2'){ state.fcM2=+e.target.value; if(state.fcM1>state.fcM2) state.fcM1=state.fcM2; rerender(); return; }
   if(e.target.id&&e.target.id.indexOf('fcG_')===0){ fcInit(); state.fcG[e.target.id.slice(4)]=e.target.value; rerender(); return; }
